@@ -2,10 +2,13 @@
 #include <android/log.h>
 #include <GLES3/gl3.h>
 #include <mutex>
+#include <string>
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
 #include "AppState.h"
+#include "Bridge.h"
+#include "BridgeConfig.h"
 #include "ConfigStorage.h"
 #include "DebugPanel.h"
 #include "ImGuiRuntime.h"
@@ -22,14 +25,23 @@
 
 extern "C" {
 
+static std::string GetJavaString(JNIEnv* env, jstring value) {
+    if (!value) return std::string();
+    const char* raw = env->GetStringUTFChars(value, nullptr);
+    if (!raw) return std::string();
+    std::string out(raw);
+    env->ReleaseStringUTFChars(value, raw);
+    return out;
+}
+
 JNIEXPORT void JNICALL
-Java_com_moss_mmdruntime_service_JniBridge_setFontPaths(JNIEnv* env, jobject, jstring bodyPath, jstring headingPath) {
-    const char* body = bodyPath ? env->GetStringUTFChars(bodyPath, nullptr) : nullptr;
-    const char* heading = headingPath ? env->GetStringUTFChars(headingPath, nullptr) : nullptr;
-    g_BodyFontPath = body ? body : "";
-    g_HeadingFontPath = heading ? heading : "";
-    if (body) env->ReleaseStringUTFChars(bodyPath, body);
-    if (heading) env->ReleaseStringUTFChars(headingPath, heading);
+Java_com_moss_mmdruntime_service_JniBridge_setFontPaths(JNIEnv* env, jobject,
+                                                        jstring latinPath,
+                                                        jstring cjkPath) {
+    // latin = 基字体（含拉丁/数字/符号），cjk = 以 MergeMode 合并进去的中文字形
+    g_LatinFontPath = GetJavaString(env, latinPath);
+    g_CjkFontPath = GetJavaString(env, cjkPath);
+    g_HeadingFontPath = g_LatinFontPath;
 }
 
 JNIEXPORT void JNICALL
@@ -77,6 +89,9 @@ Java_com_moss_mmdruntime_service_JniBridge_initImGui(JNIEnv*, jobject) {
     io.LogFilename = nullptr;
     Theme::Apply();
     ImGuiRuntime::LoadFonts();
+    Bridge::EnsureDirectory();
+    Bridge::RefreshModelList();
+    Bridge::FlushUiConfig();
     Config::LoadConfig(g_State);
     ImGui_ImplOpenGL3_Init("#version 300 es");
     ApplyBuildMode(g_BuildConfig.mode);
@@ -99,16 +114,15 @@ Java_com_moss_mmdruntime_service_JniBridge_initImGui(JNIEnv*, jobject) {
 
 JNIEXPORT void JNICALL
 Java_com_moss_mmdruntime_service_JniBridge_resizeImGui(JNIEnv*, jobject, jint width, jint height) {
+    // 这里是【悬浮窗自己】的尺寸，不是屏幕尺寸。
+    // 旧代码把 WindowManager::SetScreenSize 也喂了这个值，于是：
+    //   屏幕 := 上一帧窗口大小 → SizeFor 算出更小的目标 → 应用到 WindowManager
+    //   → surface 变更 → 再喂回来 …… 几何级数收敛到 320x420 的下限。
+    // 现在只更新 ImGui 的绘制区域，屏幕尺寸由 setScreenSize 独占。
     g_DisplayW = (int)width;
     g_DisplayH = (int)height;
     ImGui::GetIO().DisplaySize = ImVec2((float)width, (float)height);
-    WindowManager::SetScreenSize((int)width, (int)height);
-    OverlayState::UpdateFromAndroid(g_OverlayState.overlayPermissionGranted,
-                                    g_OverlayState.drawOverAppsEnabled,
-                                    true,
-                                    g_OverlayState.appInForeground,
-                                    (int)width,
-                                    (int)height);
+    g_OverlayState.surfaceActive = true;
     glViewport(0, 0, width, height);
 }
 

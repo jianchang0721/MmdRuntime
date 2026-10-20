@@ -45,6 +45,7 @@ class FloatingWindowService : Service() {
     private lateinit var boundsManager: OverlayBoundsManager
 
     private companion object {
+        const val TAG = "FloatingWindowService"
         const val CHANNEL_ID = "floating_window_channel"
         const val TOUCH_NONE = 0
         const val TOUCH_DRAG = 1
@@ -57,18 +58,13 @@ class FloatingWindowService : Service() {
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        val dm = resources.displayMetrics
-        val sysDm = android.content.res.Resources.getSystem().displayMetrics
-        screenWidth = when {
-            dm.widthPixels > 0 -> dm.widthPixels
-            sysDm.widthPixels > 0 -> sysDm.widthPixels
-            else -> 1080
-        }
-        screenHeight = when {
-            dm.heightPixels > 0 -> dm.heightPixels
-            sysDm.heightPixels > 0 -> sysDm.heightPixels
-            else -> 2400
-        }
+
+        // 屏幕尺寸必须在 native 读取 shape 之前定下来。
+        // Service 没有关联窗口，单看 resources.displayMetrics 经常拿到 0。
+        val display = OverlayMetrics.resolve(this)
+        android.util.Log.i(TAG, "screen = $display")
+        screenWidth = display.width
+        screenHeight = display.height
         boundsManager = OverlayBoundsManager(screenWidth, screenHeight)
         JniBridge.setScreenSize(screenWidth, screenHeight)
         JniBridge.setConfigDirectory(File(filesDir, "configs").absolutePath)
@@ -80,9 +76,9 @@ class FloatingWindowService : Service() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        val dm = resources.displayMetrics
-        screenWidth = dm.widthPixels
-        screenHeight = dm.heightPixels
+        val display = OverlayMetrics.resolve(this)
+        screenWidth = display.width
+        screenHeight = display.height
         boundsManager.updateScreen(screenWidth, screenHeight)
         JniBridge.setScreenSize(screenWidth, screenHeight)
         updateOverlayRuntimeState(surfaceActive = ::glSurfaceView.isInitialized && glSurfaceView.isAttachedToWindow)
@@ -124,19 +120,21 @@ class FloatingWindowService : Service() {
     }
 
     private fun prepareImGuiFonts() {
-        // 中文字体（单体 TTF，随 APK 一起打包），没有就退回模板自带的 Nunito
-        val cjk = File(filesDir, "cjk.ttf")
-        try {
-            assets.open("fonts/cjk.ttf").use { input ->
-                cjk.outputStream().use { output -> input.copyTo(output) }
-            }
-        } catch (_: Throwable) { }
+        // stb_truetype 处理不了系统 TTC 集合包（NotoSansCJK-Regular.ttc 是 5 套字体合一），
+        // ImGui::NewFrame 建图集时会 null deref 崩。用户给了单体 TTF gkai00mp-2.ttf
+        // （AR PL KaitiM GB，4.6MB），这里拷出来当 CJK 字形源。
+        //
+        // 注意 native 侧是「拉丁打底 + CJK 合并」：CJK 字体里的拉丁字形偏窄且缺
+        // 常规符号，必须让 Nunito 当基字体，否则数字和 % 会变成方块。
+        val cjk = copyAssetFontToFiles("fonts/cjk.ttf")
+        val latin = try {
+            copyAssetFontToFiles("fonts/Nunito-Regular.ttf")
+        } catch (_: Throwable) { File("") }
 
-        val body = if (cjk.exists() && cjk.length() > 100_000) cjk
-                   else copyAssetFontToFiles("fonts/Nunito-Regular.ttf")
-        val heading = if (cjk.exists() && cjk.length() > 100_000) cjk
-                      else copyAssetFontToFiles("fonts/Nunito-Bold.ttf")
-        JniBridge.setFontPaths(body.absolutePath, heading.absolutePath)
+        val usableLatin = if (latin.exists() && latin.length() > 10_000) latin.absolutePath else ""
+        val usableCjk = if (cjk.exists() && cjk.length() > 100_000) cjk.absolutePath else ""
+        android.util.Log.i(TAG, "fonts latin=${usableLatin.ifEmpty { "(builtin)" }} cjk=${usableCjk.ifEmpty { "(none)" }}")
+        JniBridge.setFontPaths(usableLatin, usableCjk)
     }
 
     private fun copyAssetFontToFiles(assetPath: String): File {
@@ -155,8 +153,10 @@ class FloatingWindowService : Service() {
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        val initialWidth = boundsManager.responsiveWidth(0.86f, 430, 590)
-        val initialHeight = boundsManager.responsiveHeight(0.44f, 560, 720)
+        // 先按屏幕算一个合理初值；真正的尺寸由 native 的 SizeFor 决定，
+        // setupOverlay 之后第一帧 syncActiveWindowBounds 会纠正过来。
+        val initialWidth = (screenWidth * 0.86f).roundToInt().coerceIn(320, screenWidth)
+        val initialHeight = (screenHeight * 0.44f).roundToInt().coerceIn(360, screenHeight)
 
         // The overlay view is intentionally sized to the active ImGui window, not fullscreen.
         // Android naturally passes touches outside this rectangle through to the app/game below.

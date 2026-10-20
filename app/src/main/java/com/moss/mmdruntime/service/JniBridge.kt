@@ -5,7 +5,8 @@ object JniBridge {
         System.loadLibrary("imgui_overlay")
     }
 
-    external fun setFontPaths(bodyPath: String, headingPath: String)
+    // latinPath = 基字体（拉丁/数字/符号），cjkPath = 用 MergeMode 合并进去的中文字形
+    external fun setFontPaths(latinPath: String, cjkPath: String)
     external fun setConfigDirectory(path: String)
     external fun updateOverlayRuntimeState(
         overlayPermission: Boolean,

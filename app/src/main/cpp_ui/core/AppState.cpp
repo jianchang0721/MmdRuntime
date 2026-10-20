@@ -1,6 +1,6 @@
 #include "AppState.h"
 
-std::string g_BodyFontPath;
+std::string g_LatinFontPath;
 std::string g_HeadingFontPath;
 std::string g_CjkFontPath;
 ImFont* g_BodyFont = nullptr;

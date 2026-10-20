@@ -11,6 +11,7 @@ set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/imgui)
 
 add_library(imgui_overlay SHARED
     native_imgui.cpp
+    bridge/Bridge.cpp
     core/AppState.cpp
     config/ConfigStorage.cpp
     modules/FeatureFactory.cpp
@@ -36,6 +37,7 @@ add_library(imgui_overlay SHARED
 
 target_include_directories(imgui_overlay PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/bridge
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/config
     ${CMAKE_CURRENT_SOURCE_DIR}/modules

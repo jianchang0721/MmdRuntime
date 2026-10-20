@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "mmd/pmx.h"
+#include "bone_hook.h"
 #include "unity/il2cpp_api.h"
 
 #define TAG "MmdRuntime"
@@ -601,44 +602,60 @@ static void probe_bones_layout() {
     int32_t backN = back ? (int32_t)((Il2CppArray*)back)->max_length : -1;
     L("[BONE] restored: get_bones()=%d  %s", backN, backN == orig ? "RESTORE-OK" : "RESTORE-FAIL");
 
-    // ---- 扩容到 224 测试 ----
-    // capacity 只有 144，必须换一块更大的内存。这里用 bionic malloc：
-    // Android 上 Unity 2018 默认就是 system allocator，SMR 析构时 free 我们的指针
-    // 走的是同一套堆，兼容。先做「改 → 读回 → 立刻还原」，验证完再考虑持久化。
+    // ---- 装 hook（容器析构拦截）----
+    bool hooked = bonehook::install();
+    L("[BONE] hook installed=%d addr=%p", (int)hooked, bonehook::found_address());
+
+    if (!hooked) {
+        LERR("[BONE] hook not installed -> 不做持久化扩容（会崩在析构）");
+        L("========== [BONE] LAYOUT DUMP END ==========");
+        return;
+    }
+
+    // ---- 持久化扩容 ----
+    // hook 已经把容器析构接管了：析构前会把这几个字段还原成 Unity 原值，
+    // 所以 data 换成我们 malloc 的指针是安全的，Unity 会 free 它自己那块。
     const int32_t TARGET = 224;
     int32_t* oldData = (int32_t*)*(void**)(base + 0x1e0);
     int64_t  oldCap  = *(int64_t*)(base + 0x1f8);
+    int32_t  oldSize = orig;
 
-    if (oldData && orig > 0 && orig < TARGET) {
+    if (oldData && oldSize > 0 && oldSize < TARGET) {
         int32_t* newData = (int32_t*)malloc((size_t)TARGET * 4);
         if (newData) {
             memset(newData, 0, (size_t)TARGET * 4);
-            for (int32_t i = 0; i < orig; i++) newData[i] = oldData[i];
-            for (int32_t i = orig; i < TARGET; i++) newData[i] = oldData[0];
+            for (int32_t i = 0; i < oldSize; i++) newData[i] = oldData[i];
+            // 多出来的槽位先填第一个骨骼的 instanceID（合法非零，不会崩）
+            for (int32_t i = oldSize; i < TARGET; i++) newData[i] = oldData[0];
+
+            bonehook::set_ours(newData, oldData, oldSize, oldCap);
 
             *(void**)(base + 0x1e0) = newData;
             *(int32_t*)(base + 0x1f0) = TARGET;
-            *(int64_t*)(base + 0x1f8) = TARGET;
+            *(int64_t*)(base + 0x1f8) = TARGET;   // 正常偶数，析构交给 hook 还原
 
             Il2CppObject* eb = invoke(g_mGetBones, s.obj, nullptr);
             int32_t eN = eb ? (int32_t)((Il2CppArray*)eb)->max_length : -1;
-            L("[BONE] expand test: %d -> %d (cap %lld -> %d), get_bones()=%d  %s",
-              orig, TARGET, (long long)oldCap, TARGET, eN,
+            L("[BONE] PERSISTENT expand: %d -> %d  data=%p (orig %p)  get_bones()=%d  %s",
+              oldSize, TARGET, (void*)newData, oldData, eN,
               eN == TARGET ? "EXPAND-OK" : "EXPAND-FAIL");
 
-            *(void**)(base + 0x1e0) = oldData;
-            *(int32_t*)(base + 0x1f0) = orig;
-            *(int64_t*)(base + 0x1f8) = oldCap;
-            free(newData);
-
-            Il2CppObject* rb = invoke(g_mGetBones, s.obj, nullptr);
-            int32_t rN = rb ? (int32_t)((Il2CppArray*)rb)->max_length : -1;
-            L("[BONE] after expand restore: get_bones()=%d  %s", rN, rN == orig ? "RESTORE-OK" : "RESTORE-FAIL");
+            if (eN != TARGET) {
+                // 读回不对就立刻回滚，别留半吊子状态
+                *(void**)(base + 0x1e0) = oldData;
+                *(int32_t*)(base + 0x1f0) = oldSize;
+                *(int64_t*)(base + 0x1f8) = oldCap;
+                bonehook::set_ours(nullptr, nullptr, 0, 0);
+                free(newData);
+                LERR("[BONE] rolled back");
+            } else {
+                L("[BONE] 持久化生效：现在这个 SMR 认为自己有 %d 根骨骼", TARGET);
+            }
         } else {
-            LERR("[BONE] malloc %d bytes failed", TARGET * 4);
+            LERR("[BONE] malloc failed");
         }
     } else {
-        LERR("[BONE] expand skipped oldData=%p orig=%d", oldData, orig);
+        LERR("[BONE] skip: oldData=%p oldSize=%d", oldData, oldSize);
     }
 
     // ---- vtable / RTTI 侦察：为 hook 析构铺路 ----

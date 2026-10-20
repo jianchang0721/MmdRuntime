@@ -1,38 +1,89 @@
 #include "ImGuiRuntime.h"
 
+#include <android/log.h>
+
 #include <cstdio>
 #include <mutex>
 
 #include "AppState.h"
 #include "imgui.h"
 
+#define LOG_TAG "ImGuiRuntime"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+
 namespace ImGuiRuntime {
 
+// ------------------------------------------------------------------
+// 字体：Nunito 打底 + CJK 合并
+//
+// 背景：stb_truetype 处理不了 TTC 集合包（NotoSansCJK-Regular.ttc 是 5 套
+// 字体的集合），ImGui::NewFrame 建图集时 null deref 崩。用户给了单体 TTF
+// gkai00mp-2.ttf（AR PL KaitiM GB），这次用它。
+//
+// 关键点：ImGui 的 MergeMode 依赖「前一个 AddFont 返回的指针」，所以
+// *必须先有基字体*。若 CJK 直接当第一份，拉丁字符取不到字形会变方块。
+// ------------------------------------------------------------------
 void LoadFonts() {
     ImGuiIO& io = ImGui::GetIO();
-    const float scale = 2.6f;
 
-    // 只认 Java 侧拷进来的字体（assets/fonts/cjk.ttf，单体 TTF）。
-    // 系统里的 NotoSansCJK-Regular.ttc 是五套字体的集合包，stb_truetype
-    // 在 ImGui::NewFrame 建图集时会崩（tombstone 落在 NewFrame+908），
-    // 所以系统字体一个都不探测。
-    ImFont* body = nullptr;
-    ImFont* heading = nullptr;
-    if (!g_BodyFontPath.empty()) {
-        body = io.Fonts->AddFontFromFileTTF(g_BodyFontPath.c_str(), 13.0f * scale, nullptr,
-                   io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-        heading = io.Fonts->AddFontFromFileTTF(g_BodyFontPath.c_str(), 16.0f * scale, nullptr,
-                    io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-    }
-    if (!body) {
-        body = io.Fonts->AddFontFromFileTTF("/system/fonts/Roboto-Regular.ttf", 13.0f * scale);
-    }
-    if (!body) body = io.Fonts->AddFontDefault();
-    if (!heading) heading = body;
+    // 悬浮窗像素密度高，26px 起才够看
+    const float baseSize = 26.0f;
 
-    g_BodyFont = body;
-    g_HeadingFont = heading;
-    io.FontDefault = g_BodyFont;
+    ImFontConfig baseConfig;
+    baseConfig.SizePixels = baseSize;
+
+    ImFont* base = nullptr;
+    // 基字体优先用拉丁字体（CJK 字体里的拉丁字形偏窄且缺常规符号）
+    if (!g_LatinFontPath.empty()) {
+        base = io.Fonts->AddFontFromFileTTF(g_LatinFontPath.c_str(), baseSize, &baseConfig);
+    }
+    if (!base) base = io.Fonts->AddFontDefault();
+    if (!base) {
+        LOGW("LoadFonts: no base font available");
+        g_BodyFont = nullptr;
+        g_HeadingFont = nullptr;
+        return;
+    }
+
+    ImFontConfig mergeConfig;
+    mergeConfig.MergeMode = true;
+    mergeConfig.SizePixels = baseSize;
+    // CJK 字形密度高，oversample 给足才不会糊
+    mergeConfig.OversampleH = 2;
+    mergeConfig.OversampleV = 2;
+    mergeConfig.PixelSnapH = true;
+
+    bool cjkMerged = false;
+    if (!g_CjkFontPath.empty()) {
+        // 自定义 range：常用汉字 + 标点 + 假名 + 全角。
+        // 用默认的 GetGlyphRangesChineseSimplifiedCommon() 够用，但缺全角标点，
+        // 这里显式补全免得界面上出现方块。
+        static ImWchar ranges[] = {
+            0x0020, 0x00FF,  // 拉丁 + 常用符号
+            0x2000, 0x206F,  // 通用标点
+            0x3000, 0x303F,  // CJK 标点
+            0x3040, 0x309F,  // 平假名
+            0x30A0, 0x30FF,  // 片假名
+            0x4E00, 0x9FFF,  // 常用汉字
+            0xFF00, 0xFFEF,  // 全角/半角
+            0,
+        };
+        ImFont* merged = io.Fonts->AddFontFromFileTTF(g_CjkFontPath.c_str(), baseSize,
+                                                      &mergeConfig, ranges);
+        cjkMerged = merged != nullptr;
+        if (cjkMerged) LOGI("LoadFonts: CJK merged from %s", g_CjkFontPath.c_str());
+        else LOGW("LoadFonts: failed to load CJK %s", g_CjkFontPath.c_str());
+    }
+
+    io.Fonts->Build();
+
+    g_BodyFont = base;
+    g_HeadingFont = base;
+    io.FontDefault = base;
+
+    LOGI("LoadFonts: base=%p cjkMerged=%d atlas=%dx%d glyphs=%d", (void*)base,
+         cjkMerged ? 1 : 0, io.Fonts->TexWidth, io.Fonts->TexHeight, base->Glyphs.Size);
 }
 
 void BeginFrameInput() {

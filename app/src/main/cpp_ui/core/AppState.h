@@ -8,7 +8,7 @@
 #include "TemplateModels.h"
 #include "imgui.h"
 
-extern std::string g_BodyFontPath;
+extern std::string g_LatinFontPath;
 extern std::string g_HeadingFontPath;
 extern std::string g_CjkFontPath;
 extern ImFont* g_BodyFont;
