@@ -534,7 +534,7 @@ public class MainActivity extends Activity {
         new Thread(new Runnable() {
             @Override public void run() {
                 try {
-                    String out = su("ls -l " + GAME_FILES + "/libmmdruntime.so "; + GAME_FILES + "/*.so 2>/dev/null");
+                    String out = su("ls -l " + GAME_FILES + "/libmmdruntime.so " + GAME_FILES + "/*.so 2>/dev/null");
                     if (out == null || out.trim().isEmpty()) {
                         ui("✗ so：游戏目录里没有 libmmdruntime.so");
                         ui("  " + GAME_FILES + "/");
