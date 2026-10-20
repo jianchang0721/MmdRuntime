@@ -768,9 +768,15 @@ static bool find_pmx_in_dir(const char* dir, std::string& out, int depth) {
 static std::string find_pmx_path() {
     const char* root = "/data/data/com.hermes.h1game/files/models";
 
-    if (g_hasUi && g_ui.activeModel[0]) {
+    // 拷贝一份再用，g_ui 是 UI 线程写的，不能裸读
+    char want[160] = {0};
+    pthread_mutex_lock(&g_cfgMtx);
+    if (g_hasUi) snprintf(want, sizeof(want), "%s", g_ui.activeModel);
+    pthread_mutex_unlock(&g_cfgMtx);
+
+    if (want[0]) {
         char sub[1200];
-        snprintf(sub, sizeof(sub), "%s/%s", root, g_ui.activeModel);
+        snprintf(sub, sizeof(sub), "%s/%s", root, want);
         std::string out;
         if (find_pmx_in_dir(sub, out, 0)) return out;
     }
@@ -995,10 +1001,22 @@ extern "C" void native_tick() {
         pthread_mutex_lock(&g_cfgMtx);
         bool rescan  = g_ui.cmdRescan  != 0;
         bool reapply = g_ui.cmdReapply != 0;
-        bool want    = g_hasUi && g_ui.enableReplace;
+        bool hasUi   = g_hasUi;
+        bool want    = hasUi && g_ui.enableReplace;
         g_ui.cmdRescan  = 0;
         g_ui.cmdReapply = 0;
         pthread_mutex_unlock(&g_cfgMtx);
+
+        // 兜底：UI 一直没连上来就在 15 秒后自动跑一次，
+        // 让「so 自己能不能加载模型」和「UI 能不能连上」两件事能分开定位
+        static bool autoTried = false;
+        if (!autoTried && !hasUi && g_t0 && now_ms() - g_t0 > 15000) {
+            autoTried = true;
+            snprintf(g_status, sizeof(g_status), "no ui, auto load");
+            L("[IDLE] 没有 UI 连上来，自动尝试加载一次");
+            g_stage = ST_LOAD;
+            break;
+        }
 
         if (rescan) {
             g_smrs.clear();

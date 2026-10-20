@@ -185,6 +185,8 @@ void RenderFrame(EGLDisplay dpy, EGLSurface surf) {
     g_panel.h = sz.y;
     g_panel.valid = WindowManager::showOverlay && sz.x > 1.0f && sz.y > 1.0f;
 
+    // 画到默认 framebuffer（游戏若刚渲完到 FBO，这里必须先解绑）
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, w, h);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -208,10 +210,13 @@ void RenderFrame(EGLDisplay dpy, EGLSurface surf) {
 // ---------------------------------------------------------------------
 // hook
 // ---------------------------------------------------------------------
+std::mutex g_renderMutex;   // 多 surface / 多线程 swap 时串行进 ImGui
+
 EGLBoolean HookSwapBuffers(EGLDisplay dpy, EGLSurface surf) {
     if (!g_host.broken) {
         // 这里绝不能抛异常出来：异常穿过 Dobby 的 trampoline 会连累游戏
         try {
+            std::lock_guard<std::mutex> lock(g_renderMutex);
             RenderFrame(dpy, surf);
         } catch (...) {
             LOGE("RenderFrame threw, disabling UI");
