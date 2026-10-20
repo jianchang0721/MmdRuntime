@@ -97,10 +97,40 @@ void BeginFrameInput() {
 
     std::lock_guard<std::mutex> lock(g_InputMutex);
     ImGuiIO& io = ImGui::GetIO();
+
+    // 触摸拖动 → 滚轮。
+    //
+    // 手机上没有滚轮，ImGui 的 Child 默认也拖不动内容。不转的话
+    // 内容一超出面板高度就只能看上面半截（自由视角按钮就这么看不见）。
+    //
+    // 只在「没按住任何控件」时转，否则拖滑条 / 拖面板标题栏会被当成滚动。
+    static float lastTouchY = -1.0f;
+    static bool  pressedOnItem = false;
+
     for (const auto& ev : g_Touches) {
-        io.AddMousePosEvent(ev.x, ev.y);
-        if (ev.action == 0) io.AddMouseButtonEvent(0, true);
-        if (ev.action == 1) io.AddMouseButtonEvent(0, false);
+        if (ev.action == 0) {          // DOWN
+            lastTouchY = ev.y;
+            pressedOnItem = ImGui::IsAnyItemHovered();
+            io.AddMousePosEvent(ev.x, ev.y);
+            io.AddMouseButtonEvent(0, true);
+        } else if (ev.action == 1) {   // UP
+            lastTouchY = -1.0f;
+            pressedOnItem = false;
+            io.AddMousePosEvent(ev.x, ev.y);
+            io.AddMouseButtonEvent(0, false);
+        } else if (ev.action == 2) {   // MOVE
+            io.AddMousePosEvent(ev.x, ev.y);
+            if (!pressedOnItem && lastTouchY >= 0.0f) {
+                const float dy = ev.y - lastTouchY;
+                if (dy > 1.0f || dy < -1.0f) {
+                    // 手指上滑 = 内容往下走 = 滚轮取负
+                    io.AddMouseWheelEvent(0.0f, -dy * 0.06f);
+                }
+                lastTouchY = ev.y;
+            }
+        } else {
+            io.AddMousePosEvent(ev.x, ev.y);
+        }
     }
     g_Touches.clear();
     for (const auto& ev : g_Keys) {

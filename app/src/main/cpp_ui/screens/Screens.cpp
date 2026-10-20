@@ -211,27 +211,42 @@ void DrawMenuScreen() {
     }
 
     if (ImGui::BeginTabBar("##Tabs")) {
-        // 每个 Tab 内独立滚动；高度 0 = 吃满剩余，内容超高自动滚
-        if (ImGui::BeginTabItem("概览")) {
+        // 每个 Tab 包一层 BeginChild：
+        //   · 高度 0 = 吃满 Tab 剩下的空间，内容超高时出现滚动条
+        //   · 之前只写了注释没真包，内容一超出面板高度就被裁掉，
+        //     手机上手划也滑不到（设置页里那个「自由视角」就是这么看不见的）
+        #define MMD_TAB_BEGIN(idstr) \
+            if (ImGui::BeginTabItem(idstr)) { \
+                if (ImGui::BeginChild("##scroll_" idstr, ImVec2(0, 0), false)) {
+        #define MMD_TAB_END \
+                } \
+                ImGui::EndChild(); \
+                ImGui::EndTabItem(); \
+            }
+
+        MMD_TAB_BEGIN("概览")
             DrawOverviewTab(Model);
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("渲染")) {
+        MMD_TAB_END
+
+        MMD_TAB_BEGIN("渲染")
             DrawRenderTab(Model);
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("骨骼")) {
+        MMD_TAB_END
+
+        MMD_TAB_BEGIN("骨骼")
             DrawBoneTab(Model);
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("诊断")) {
+        MMD_TAB_END
+
+        MMD_TAB_BEGIN("诊断")
             DrawDiagnosticTab(Model);
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("设置")) {
+        MMD_TAB_END
+
+        MMD_TAB_BEGIN("设置")
             DrawSettingsTab(Model);
-            ImGui::EndTabItem();
-        }
+        MMD_TAB_END
+
+        #undef MMD_TAB_BEGIN
+        #undef MMD_TAB_END
+
         ImGui::EndTabBar();
     }
 
