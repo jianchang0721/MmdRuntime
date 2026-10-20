@@ -246,10 +246,9 @@ class FloatingWindowService : Service() {
                         dragStartX = params.x
                         dragStartY = params.y
                         touchMode = if (dragZone) TOUCH_PENDING else TOUCH_NONE
-                        // 非拖拽区：直接交给 ImGui
-                        if (touchMode == TOUCH_NONE) {
-                            JniBridge.onTouchEvent(0, event.x, event.y)
-                        }
+                        // DOWN 一律先交给 ImGui（按钮需要真实的按下事件），
+                        // 真的判定成拖拽时再补一个 UP 把 ImGui 的按下状态撤掉。
+                        JniBridge.onTouchEvent(0, event.x, event.y)
                         return@setOnTouchListener true
                     }
 
@@ -259,6 +258,8 @@ class FloatingWindowService : Service() {
                             val dy = event.rawY - dragStartRawY
                             if (dx * dx + dy * dy >= DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) {
                                 touchMode = TOUCH_DRAG
+                                // 撤掉刚才发给 ImGui 的按下状态，避免残留 active item
+                                JniBridge.onTouchEvent(1, event.x, event.y)
                             } else {
                                 return@setOnTouchListener true  // 还没到阈值，继续观察
                             }
@@ -278,17 +279,11 @@ class FloatingWindowService : Service() {
                     }
 
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        val wasPending = touchMode == TOUCH_PENDING
                         val wasDrag = touchMode == TOUCH_DRAG
                         touchMode = TOUCH_NONE
                         if (wasDrag) return@setOnTouchListener true
-                        if (wasPending) {
-                            // 位移没超阈值 = 点击：down+up 成对发给 ImGui，
-                            // 让折叠横栏上的「展开热区 / 退出 X」能响应。
-                            JniBridge.onTouchEvent(0, event.x, event.y)
-                            JniBridge.onTouchEvent(1, event.x, event.y)
-                            return@setOnTouchListener true
-                        }
+                        // 没拖过 = 点击；DOWN 已经在按下时发过了，这里只补 UP。
+                        // 折叠横栏的「展开热区 / 退出 X」靠这条命中。
                         JniBridge.onTouchEvent(1, event.x, event.y)
                         return@setOnTouchListener true
                     }
