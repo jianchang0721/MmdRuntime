@@ -155,15 +155,35 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
             d[i * 3 + 1] = v.pos[1];
             d[i * 3 + 2] = v.pos[2];
         }
-        MLOG("[MESH] uploading vertices nv=%zu...", nv);
+        // ---- 先用小批量探一次路 ----
+        // 全量 21804 个顶点一次灌进去，崩了都不知道是传参错还是数量问题。
+        // 先拿 64 个试，通了再上全量。
+        if (mc.mSetVertices) {
+            void* probe = uo::u_new_array(mc.elemVec3, 64);
+            if (probe) {
+                float* pd = (float*)uo::u_array_data(probe);
+                for (int k = 0; k < 64; k++) {
+                    pd[k * 3 + 0] = (float)k * 0.01f;
+                    pd[k * 3 + 1] = 0.0f;
+                    pd[k * 3 + 2] = 0.0f;
+                }
+                MLOG("[MESH] probe: set_vertices x64...");
+                void* pa[1] = { &probe };
+                uo::u_call(mesh, mc.mSetVertices, pa);
+                MLOG("[MESH] probe: x64 survived");
+            }
+        }
+
+        MLOG("[MESH] step1/8 uploading vertices nv=%zu arr=%p...", nv, arr);
         // Unity 2018 的 set_vertices 是 set_vertices(Vector3[]&)，
         // runtime_invoke 要的是「指向数组引用的指针」
         void* a[1] = { &arr };
         uo::u_call(mesh, mc.mSetVertices, a);
-        MLOG("[MESH] vertices uploaded");
+        MLOG("[MESH] step1/8 vertices done");
     }
 
     // ---- 3) normals ----
+    MLOG("[MESH] step2/8 normals...");
     {
         void* arr = uo::u_new_array(mc.elemVec3, nv);
         if (arr) {
@@ -180,6 +200,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
     }
 
     // ---- 4) uv ----
+    MLOG("[MESH] step3/8 uv...");
     {
         void* arr = uo::u_new_array(mc.elemVec2, nv);
         if (arr) {
@@ -216,6 +237,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
             else subs.back().count += (int)nf - cursor;
         }
 
+        MLOG("[MESH] step4/8 triangles, subs=%zu...", subs.size());
         bool multiOk = false;
         if (mc.mSetSubMeshCount && mc.mSetTrianglesSub && subs.size() > 1) {
             int32_t sn = (int32_t)subs.size();
@@ -256,6 +278,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
 
     // ---- 6) boneWeights ----
     // Unity BoneWeight 内存布局：int32 boneIndex0..3, float weight0..3（共 32 字节）
+    MLOG("[MESH] step6/8 boneWeights nv=%zu...", nv);
     if (mc.mSetBoneWeights && mc.elemBoneWeight) {
         void* arr = uo::u_new_array(mc.elemBoneWeight, nv);
         if (arr) {
@@ -284,6 +307,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
 
     // ---- 7) bindposes ----
     // 每根骨骼一个：世界矩阵的逆。MMD 骨骼初始是单位旋转 + 平移，所以逆 = 平移取负
+    MLOG("[MESH] step7/8 bindposes nb=%d...", nb);
     if (mc.mSetBindposes && mc.elemMatrix4x4 && nb > 0) {
         void* arr = uo::u_new_array(mc.elemMatrix4x4, (size_t)nb);
         if (arr) {
@@ -310,6 +334,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
     }
 
     // ---- 8) UploadMeshData ----
+    MLOG("[MESH] step8/8 UploadMeshData...");
     if (mc.mUpload) {
         uint8_t keepReadable = 1;   // true：保留 CPU 副本，方便后面调试
         void* a[1] = { &keepReadable };

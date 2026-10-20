@@ -93,6 +93,10 @@ static void L(const char* fmt, ...) {
         va_end(ap);
         fputc('\n', f);
         fflush(f);
+        // 光 fflush 只把用户态缓冲推到内核，进程被 SIGSEGV 打死时
+        // 页缓存里没落盘的部分照样丢。加载/崩溃排查期间必须 fsync。
+        int fd = fileno(f);
+        if (fd >= 0) fsync(fd);
     }
     va_list ap2; va_start(ap2, fmt);
     __android_log_vprint(ANDROID_LOG_INFO, TAG, fmt, ap2);
