@@ -236,6 +236,23 @@ static bool bind_api() {
     B(string_new,               "il2cpp_string_new");
     B(object_get_class,         "il2cpp_object_get_class");
     B(type_get_object,          "il2cpp_type_get_object");
+
+    // ---- 下面这些是 V3（建骨骼树 / 建 Mesh / 建材质）必需的 ----
+    // 之前漏了一整半：V1/V2 只用 runtime_invoke + 几个 getter，所以没暴露。
+    // 结果 create_node 里 g_api.object_new 永远是 null，224 根骨骼一根建不出来。
+    B(object_new,               "il2cpp_object_new");
+    B(array_new,                "il2cpp_array_new");
+    B(class_from_type,          "il2cpp_class_from_type");
+    B(method_get_param,         "il2cpp_method_get_param");
+    B(class_is_assignable_from, "il2cpp_class_is_assignable_from");
+    B(image_get_class_count,    "il2cpp_image_get_class_count");
+    B(image_get_class,          "il2cpp_image_get_class");
+    B(class_get_fields,         "il2cpp_class_get_fields");
+    B(field_get_name,           "il2cpp_field_get_name");
+    B(field_get_offset,         "il2cpp_field_get_offset");
+    B(field_get_type,           "il2cpp_field_get_type");
+    B(type_get_name,            "il2cpp_type_get_name");
+    B(class_array_element_size, "il2cpp_class_array_element_size");
     #undef B
 
     L("[IL2CPP] resolved, missing=%d", missing);
@@ -245,8 +262,14 @@ static bool bind_api() {
         if (cf) { fread(cmd, 1, sizeof(cmd) - 1, cf); fclose(cf); }
         L("[IL2CPP] pid=%d cmdline='%s'", getpid(), cmd);
     }
+    // 核心 API 缺一个后面就会在莫名其妙的地方崩，不如在这里直接判死
     if (!g_api.domain_get || !g_api.class_from_name || !g_api.runtime_invoke) {
         LERR("[IL2CPP] core api missing");
+        return false;
+    }
+    if (!g_api.object_new || !g_api.array_new) {
+        LERR("[IL2CPP] object_new=%p array_new=%p 缺失，建对象/数组全废",
+             (void*)g_api.object_new, (void*)g_api.array_new);
         return false;
     }
     // 不再调 il2cpp_thread_attach。
