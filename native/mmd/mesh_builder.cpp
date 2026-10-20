@@ -128,6 +128,22 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
     if (!mesh) { MLOG("[MESH] object_new failed"); return false; }
     uo::u_call(mesh, mc.mCtor, nullptr);
 
+    // ---- 1.5) 打印 set_vertices 的真实参数类型 ----
+    // 崩在第一次灌顶点上，先确认签名是 Vector3[] 还是 Vector3[]&
+    {
+        void* iter = nullptr;
+        const MethodInfo* m = nullptr;
+        while ((m = g_api.class_get_methods((Il2CppClass*)mc.meshCls, &iter)) != nullptr) {
+            const char* mn = g_api.method_get_name(m);
+            if (!mn || strcmp(mn, "set_vertices") != 0) continue;
+            uint32_t pc = g_api.method_get_param_count(m);
+            const Il2CppType* t = g_api.method_get_param(m, 0);
+            Il2CppClass* pcl = t ? g_api.class_from_type(t) : nullptr;
+            MLOG("[MESH] set_vertices sig: params=%u p0class='%s'",
+                 pc, pcl ? g_api.class_get_name(pcl) : "(null)");
+        }
+    }
+
     // ---- 2) vertices ----
     {
         void* arr = uo::u_new_array(mc.elemVec3, nv);
@@ -139,8 +155,12 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
             d[i * 3 + 1] = v.pos[1];
             d[i * 3 + 2] = v.pos[2];
         }
-        void* a[1] = { arr };
+        MLOG("[MESH] uploading vertices nv=%zu...", nv);
+        // Unity 2018 的 set_vertices 是 set_vertices(Vector3[]&)，
+        // runtime_invoke 要的是「指向数组引用的指针」
+        void* a[1] = { &arr };
         uo::u_call(mesh, mc.mSetVertices, a);
+        MLOG("[MESH] vertices uploaded");
     }
 
     // ---- 3) normals ----
@@ -154,7 +174,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                 d[i * 3 + 1] = v.nrm[1];
                 d[i * 3 + 2] = v.nrm[2];
             }
-            void* a[1] = { arr };
+            void* a[1] = { &arr };
             uo::u_call(mesh, mc.mSetNormals, a);
         }
     }
@@ -169,7 +189,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                 d[i * 2 + 0] = v.uv[0];
                 d[i * 2 + 1] = v.uv[1];
             }
-            void* a[1] = { arr };
+            void* a[1] = { &arr };
             uo::u_call(mesh, mc.mSetUV, a);
         }
     }
@@ -212,7 +232,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                     d[k] = model.faceVertex[(size_t)(r.start + k)];
                 }
                 int32_t idx = (int32_t)si;
-                void* a2[2] = { arr, &idx };
+                void* a2[2] = { &arr, &idx };
                 uo::u_call(mesh, mc.mSetTrianglesSub, a2);
                 okCount++;
             }
@@ -227,7 +247,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
             if (!arr) { MLOG("[MESH] triangles array alloc failed"); return false; }
             int32_t* d = (int32_t*)uo::u_array_data(arr);
             for (size_t i = 0; i < nf; i++) d[i] = model.faceVertex[i];
-            void* a[1] = { arr };
+            void* a[1] = { &arr };
             uo::u_call(mesh, mc.mSetTriangles, a);
             out.subMeshes = 1;
             MLOG("[MESH] fallback to single submesh (materials=%zu)", model.materials.size());
@@ -255,7 +275,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                     w[0] = 1.0f;
                 }
             }
-            void* a[1] = { arr };
+            void* a[1] = { &arr };
             uo::u_call(mesh, mc.mSetBoneWeights, a);
         }
     } else {
@@ -282,7 +302,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                 m[13] = -n.worldPos[1];
                 m[14] = -n.worldPos[2];
             }
-            void* a[1] = { arr };
+            void* a[1] = { &arr };
             uo::u_call(mesh, mc.mSetBindposes, a);
         }
     } else {
