@@ -641,6 +641,26 @@ static void probe_bones_layout() {
         LERR("[BONE] expand skipped oldData=%p orig=%d", oldData, orig);
     }
 
+    // ---- vtable / RTTI 侦察：为 hook 析构铺路 ----
+    {
+        void** vptr = *(void***)base;
+        void*  ti   = nullptr;
+        const char* tname = nullptr;
+        if (vptr) {
+            ti = vptr[-1];                       // Itanium ABI: vtable[-1] = typeinfo
+            if (ti) tname = *(const char**)((char*)ti + 8);   // type_info::__name
+        }
+        L("[HOOK] native=%p vptr=%p typeinfo=%p name=%s",
+          base, (void*)vptr, ti, tname ? tname : "?");
+
+        if (vptr) {
+            for (int i = -2; i < 24; i++) {
+                void* fn = vptr[i];
+                L("[HOOK] vt[%+d] = %p", i, fn);
+            }
+        }
+    }
+
     L("========== [BONE] LAYOUT DUMP END ==========");
 }
 

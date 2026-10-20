@@ -10,6 +10,7 @@
 
 extern std::string g_BodyFontPath;
 extern std::string g_HeadingFontPath;
+extern std::string g_CjkFontPath;
 extern ImFont* g_BodyFont;
 extern ImFont* g_HeadingFont;
 extern bool g_Initialized;

@@ -2,6 +2,7 @@
 
 std::string g_BodyFontPath;
 std::string g_HeadingFontPath;
+std::string g_CjkFontPath;
 ImFont* g_BodyFont = nullptr;
 ImFont* g_HeadingFont = nullptr;
 bool g_Initialized = false;
