@@ -12,13 +12,20 @@ android {
         applicationId "com.moss.mmdruntime"
         minSdk 24
         targetSdk 34
-        versionCode 12
-        versionName "1.0-overlay"
+        versionCode 13
+        versionName "1.2-egl"
 
         externalNativeBuild {
             cmake {
                 cppFlags '-std=c++17 -fexceptions -frtti'
             }
+        }
+
+        ndk {
+            // 只出 arm64：thirdparty/dobby 只有 arm64-v8a 的静态库，
+            // 没这个过滤 Gradle 会连带编 armeabi-v7a，链接直接报
+            // "incompatible with armelf_linux_eabi"。游戏本身也是 arm64-only。
+            abiFilters 'arm64-v8a'
         }
     }
 
