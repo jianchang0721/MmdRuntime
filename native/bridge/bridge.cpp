@@ -7,13 +7,32 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdarg>
 #include <ctime>
 #include <string>
 #include <unistd.h>
 #include <sys/stat.h>
 
 #define BTAG "MmdBridge"
-#define BLOG(...) __android_log_print(ANDROID_LOG_INFO, BTAG, __VA_ARGS__)
+
+static void (*g_logger)(const char*) = nullptr;
+
+void setLogger(void (*fn)(const char*)) { g_logger = fn; }
+
+static void BLOG(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    __android_log_vprint(ANDROID_LOG_INFO, BTAG, fmt, ap);
+    va_end(ap);
+    if (g_logger) {
+        char buf[512];
+        va_list ap2;
+        va_start(ap2, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, ap2);
+        va_end(ap2);
+        g_logger(buf);
+    }
+}
 
 namespace bridge {
 

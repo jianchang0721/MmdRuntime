@@ -54,4 +54,7 @@ void invalidate();
 // 诊断：目录是否可写（返回 false 说明 UI 侧没建好目录或权限不对）
 bool dirReady();
 
+// 注入日志回调（游戏侧把它接到写文件的日志上，logcat 会被游戏日志冲掉）
+void setLogger(void (*fn)(const char* msg));
+
 }  // namespace bridge

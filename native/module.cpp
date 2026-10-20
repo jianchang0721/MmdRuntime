@@ -688,6 +688,8 @@ static void probe_bones_layout() {
 // =====================================================================
 // tick 状态机
 // =====================================================================
+static void bridge_log_bridge(const char* msg) { L("[BRIDGE] %s", msg); }
+
 static long long now_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -882,6 +884,7 @@ extern "C" void native_tick() {
         lastTry = now_ms();
         tries++;
         if (bind_api()) {
+            bridge::setLogger(bridge_log_bridge);
             L("[IL2CPP] bound after %d tries", tries);
             run_parse_test();
             snprintf(g_status, sizeof(g_status), "il2cpp bound (%d tries)", tries);
@@ -936,6 +939,17 @@ extern "C" void native_tick() {
     }
 
     case ST_IDLE: {
+        {
+            static long long lastBeat = 0;
+            static int beats = 0;
+            if (now_ms() - lastBeat > 2000) {
+                lastBeat = now_ms();
+                beats++;
+                L("[IDLE] beat #%d hasUi=%d enable=%d model='%s' loadOk=%d",
+                  beats, (int)g_hasUi, g_hasUi ? (int)g_ui.enableReplace : -1,
+                  g_hasUi ? g_ui.activeModel : "", (int)g_load.ok);
+            }
+        }
         // 轮询 UI
         bridge::UiConfig cfg;
         if (bridge::poll(cfg)) {
