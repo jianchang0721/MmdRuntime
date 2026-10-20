@@ -95,16 +95,27 @@ static void L(const char* fmt, ...) {
 // =====================================================================
 static uintptr_t maps_base(const char* soname) {
     FILE* f = fopen("/proc/self/maps", "r");
-    if (!f) return 0;
-    char line[512];
+    if (!f) { LERR("[IL2CPP] cannot open /proc/self/maps"); return 0; }
+    // 路径可能很长（/data/app/~~xxx==/com.hermes.h1game-xxx==/lib/arm64/libil2cpp.so）
+    static char line[2048];
     uintptr_t addrs[128];
     int n = 0;
+    int totalLines = 0, hintLines = 0;
     while (fgets(line, sizeof(line), f)) {
+        totalLines++;
+        if (!strstr(line, "il2cpp")) { }
         if (!strstr(line, soname)) continue;
+        hintLines++;
         uintptr_t start = strtoull(line, nullptr, 16);
         if (n < 128) addrs[n++] = start;
     }
     fclose(f);
+    static int lastLog = -1;
+    if (n != lastLog) {
+        lastLog = n;
+        L("[IL2CPP] maps: %d lines, %d match '%s'", totalLines, hintLines, soname);
+    }
+    (void)hintLines;
     uintptr_t lowest = 0;
     for (int i = 0; i < n; i++) {
         uint8_t* p = (uint8_t*)addrs[i];
@@ -179,7 +190,7 @@ static uintptr_t g_libunity = 0;
 
 static bool bind_api() {
     uintptr_t base = maps_base("libil2cpp.so");
-    if (!base) { LERR("[IL2CPP] libil2cpp.so not in maps"); return false; }
+    if (!base) return false;   // 调用方负责重试，不在这里刷屏
     g_libunity = maps_base("libunity.so");
     L("[IL2CPP] il2cpp base=%p  unity base=%p", (void*)base, (void*)g_libunity);
 
@@ -206,6 +217,12 @@ static bool bind_api() {
     #undef B
 
     L("[IL2CPP] resolved, missing=%d", missing);
+    {
+        char cmd[256] = {0};
+        FILE* cf = fopen("/proc/self/cmdline", "rb");
+        if (cf) { fread(cmd, 1, sizeof(cmd) - 1, cf); fclose(cf); }
+        L("[IL2CPP] pid=%d cmdline='%s'", getpid(), cmd);
+    }
     if (!g_api.domain_get || !g_api.class_from_name || !g_api.runtime_invoke) {
         LERR("[IL2CPP] core api missing");
         return false;
@@ -531,16 +548,26 @@ extern "C" void native_tick() {
         }
         break;
 
-    case ST_BIND:
+    case ST_BIND: {
+        // il2cpp 可能比我们晚加载，每秒重试，最多 90 次
+        static int tries = 0;
+        static long long lastTry = 0;
+        if (now_ms() - lastTry < 1000) break;
+        lastTry = now_ms();
+        tries++;
         if (bind_api()) {
+            L("[IL2CPP] bound after %d tries", tries);
             run_parse_test();
-            snprintf(g_status, sizeof(g_status), "il2cpp bound");
+            snprintf(g_status, sizeof(g_status), "il2cpp bound (%d tries)", tries);
             g_stage = ST_PARSE;
-        } else {
-            snprintf(g_status, sizeof(g_status), "il2cpp bind failed");
+        } else if (tries >= 90) {
+            snprintf(g_status, sizeof(g_status), "il2cpp bind failed x90");
             g_stage = ST_DONE;
+        } else {
+            snprintf(g_status, sizeof(g_status), "waiting il2cpp (%d)", tries);
         }
         break;
+    }
 
     case ST_PARSE:
         if (!init_unity_refs()) {
