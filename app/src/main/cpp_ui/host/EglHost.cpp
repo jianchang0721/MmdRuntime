@@ -272,48 +272,53 @@ bool WantsTouch(float x, float y) {
 }  // namespace Host
 
 // =====================================================================
-// JNI（名字跟 JniBridge.kt 一一对应）
+// 对外的 C 接口
+//
+// 为什么还要这一层：libimgui_overlay.so 现在是游戏侧 so 用
+// android_dlopen_ext 从 memfd 加载的，ART 根本不认识它，
+// Java_com_xxx 形式的 JNI 符号没人会去解析。
+//
+// 所以真正的入口放在 libmmdruntime.so，它 dlsym("ui_touch") 找到这里。
+// System.load 兜底路径下 JNI 符号也还在（同一批实现，只是多包一层）。
 // =====================================================================
-extern "C" JNIEXPORT void JNICALL
-Java_com_moss_mmdruntime_service_JniBridge_setFontPaths(JNIEnv* env, jobject,
-                                                        jstring latinPath,
-                                                        jstring cjkPath) {
-    auto toStr = [&](jstring s) {
-        std::string out;
-        if (s) {
-            const char* raw = env->GetStringUTFChars(s, nullptr);
-            if (raw) { out = raw; env->ReleaseStringUTFChars(s, raw); }
-        }
-        return out;
-    };
-    g_LatinFontPath   = toStr(latinPath);
-    g_CjkFontPath     = toStr(cjkPath);
+extern "C" __attribute__((visibility("default"))) void ui_set_fonts(const char* latin, const char* cjk) {
+    if (latin) g_LatinFontPath = latin;
+    if (cjk)   g_CjkFontPath = cjk;
     g_HeadingFontPath = g_LatinFontPath;
     LOGI("fonts: latin='%s' cjk='%s'", g_LatinFontPath.c_str(), g_CjkFontPath.c_str());
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_moss_mmdruntime_service_JniBridge_setConfigDirectory(JNIEnv* env, jobject, jstring path) {
-    if (!path) return;
-    const char* raw = env->GetStringUTFChars(path, nullptr);
-    if (raw) {
-        g_ConfigDirectory = raw;
-        env->ReleaseStringUTFChars(path, raw);
-    }
+extern "C" __attribute__((visibility("default"))) int ui_ready(void) {
+    return Host::IsReady() ? 1 : 0;
 }
 
-// 返回 true = 这个触摸归 UI，游戏别收
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_moss_mmdruntime_service_JniBridge_onTouchEvent(JNIEnv*, jobject,
-                                                        jint action, jfloat x, jfloat y,
-                                                        jfloat viewW, jfloat viewH) {
+extern "C" __attribute__((visibility("default"))) int ui_want_text_input(void) {
+    if (!g_host.inited) return 0;
+    return ImGui::GetIO().WantTextInput ? 1 : 0;
+}
+
+extern "C" __attribute__((visibility("default"))) const char* ui_build_tag(void) {
+    return "imgui-overlay v1.2";
+}
+
+// 装 eglSwapBuffers hook。
+//
+// 必须自己调：android_dlopen_ext 加载的 so 不会被 ART 当模块看待，
+// JNI_OnLoad 根本不会被调。主路径下这一步由 mmdruntime 显式调。
+extern "C" __attribute__((visibility("default"))) void ui_init(void) {
+    LOGI("ui_init");
+    Host::Install();
+}
+
+extern "C" __attribute__((visibility("default")))
+int ui_touch(int action, float x, float y, float viewW, float viewH) {
     if (viewW > 0 && viewH > 0) {
         g_host.viewW = (int)viewW;
         g_host.viewH = (int)viewH;
     }
 
     bool eat = Host::WantsTouch(x, y);
-    if (!g_host.inited) return JNI_FALSE;
+    if (!g_host.inited) return 0;
 
     float sx = MapX(x);
     float sy = MapY(y);
@@ -338,30 +343,56 @@ Java_com_moss_mmdruntime_service_JniBridge_onTouchEvent(JNIEnv*, jobject,
         default:
             break;
     }
-    return eat ? JNI_TRUE : JNI_FALSE;
+    return eat ? 1 : 0;
+}
+
+extern "C" __attribute__((visibility("default")))
+void ui_key(int unicodeChar, int keyCode, int isDown) {
+    std::lock_guard<std::mutex> lock(g_InputMutex);
+    g_Keys.push_back({unicodeChar, keyCode, isDown != 0});
+}
+
+// =====================================================================
+// JNI 壳子（只在 System.load 兜底路径下使用）
+//
+// 主路径是 mmdruntime 用 android_dlopen_ext 加载本 so，那时 ART 不认识
+// 这个模块，下面这堆符号根本没人解析 —— 真正被调的是上面的 ui_*。
+// =====================================================================
+static std::string JStr(JNIEnv* env, jstring s) {
+    std::string out;
+    if (s) {
+        const char* raw = env->GetStringUTFChars(s, nullptr);
+        if (raw) { out = raw; env->ReleaseStringUTFChars(s, raw); }
+    }
+    return out;
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_moss_mmdruntime_service_JniBridge_onKeyEvent(JNIEnv*, jobject,
-                                                      jint unicodeChar, jint keyCode, jboolean isDown) {
-    std::lock_guard<std::mutex> lock(g_InputMutex);
-    g_Keys.push_back({(int)unicodeChar, (int)keyCode, isDown == JNI_TRUE});
+Java_com_moss_mmdruntime_service_JniBridge_setFontPaths(JNIEnv* env, jobject, jstring latin, jstring cjk) {
+    std::string l = JStr(env, latin), c = JStr(env, cjk);
+    ui_set_fonts(l.c_str(), c.c_str());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_moss_mmdruntime_service_JniBridge_onKeyEvent(JNIEnv*, jobject, jint u, jint k, jboolean down) {
+    ui_key((int)u, (int)k, down == JNI_TRUE ? 1 : 0);
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_moss_mmdruntime_service_JniBridge_wantTextInput(JNIEnv*, jobject) {
-    if (!g_host.inited) return JNI_FALSE;
-    return ImGui::GetIO().WantTextInput ? JNI_TRUE : JNI_FALSE;
+    return ui_want_text_input() ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_moss_mmdruntime_service_JniBridge_isReady(JNIEnv*, jobject) {
-    return Host::IsReady() ? JNI_TRUE : JNI_FALSE;
+    return ui_ready() ? JNI_TRUE : JNI_FALSE;
 }
 
-// so 一加载就把 hook 装上，剩下的等第一次 swap
+// 两条加载路径都要装 hook：
+//   · System.load（兜底）→ 这里
+//   · android_dlopen_ext → 同样会调 JNI_OnLoad（且不要求 JavaVM 有效）
 JNIEXPORT jint JNI_OnLoad(JavaVM*, void*) {
-    LOGI("libimgui_overlay loaded");
-    Host::Install();
+    LOGI("libimgui_overlay loaded via System.load (%s)", ui_build_tag());
+    ui_init();
     return JNI_VERSION_1_6;
 }

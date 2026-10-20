@@ -17,8 +17,6 @@ import java.io.OutputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
-import com.moss.mmdruntime.service.JniBridge;
-
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -60,6 +58,13 @@ public class HookEntry implements IXposedHookLoadPackage {
     private static native String nativeStatus();
     private static native void nativeBind(Class<?> cls);
     private static native void nativeReset();
+
+    // UI so 的 JNI 入口全部收回到游戏侧 so（因为 UI so 是从 memfd 加载的，
+    // ART 不认识它，Java_com_xxx 符号没人解析）
+    private static native String  nativeLoadUi(String soPath, String fakeName);
+    private static native void    nativeUiFonts(String latin, String cjk);
+    private static native boolean nativeUiTouch(int action, float x, float y, float vw, float vh);
+    private static native boolean nativeUiReady();
 
     static int  loadSeq      = 0;
     static int  uiLoadSeq    = 0;
@@ -110,7 +115,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                         View decor = ((Activity) param.thisObject).getWindow().getDecorView();
                         int w = decor.getWidth(), h = decor.getHeight();
                         if (w <= 0 || h <= 0) return;
-                        boolean eaten = JniBridge.INSTANCE.onTouchEvent(
+                        boolean eaten = nativeUiTouch(
                                 ev.getActionMasked(), ev.getX(), ev.getY(), (float) w, (float) h);
                         if (eaten) param.setResult(true);
                     } catch (Throwable ignored) {
@@ -148,21 +153,68 @@ public class HookEntry implements IXposedHookLoadPackage {
         String r2 = prepareFonts(act);
         sb.append(" | fonts=").append(r2);
 
-        // ③ UI so
-        String r3 = loadSo(UI_SO, false, act);
+        // ③ UI so（主路径：mmdruntime 用 memfd 加载，落盘文件加载后被删）
+        String r3 = loadUiSo(act);
         sb.append(" | ui=").append(r3);
 
-        // ④ 字体路径喂给 UI so
+        // ④ 字体路径喂给 UI
         if (uiSoReady) {
             try {
-                JniBridge.INSTANCE.setFontPaths(latinFontPath, cjkFontPath);
-                JniBridge.INSTANCE.setConfigDirectory(GAME_FILES + "/mmdrt");
+                nativeUiFonts(latinFontPath, cjkFontPath);
                 sb.append(" | fontPath=ok");
             } catch (Throwable t) {
                 sb.append(" | fontPath=").append(t);
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * UI so 加载。
+     *
+     * 主路径：解到私有目录 → 交给 mmdruntime 用 android_dlopen_ext + memfd 加载。
+     *         maps 里显示的是我们编的假路径，落盘文件加载完立刻被 native 侧 unlink。
+     * 兜底：memfd 那条路挂了就退回 System.load（能跑起来比隐身他妈的重要）。
+     */
+    static String loadUiSo(Context ctx) {
+        File src = null;
+        String dir = DIRS[0];
+        for (String d : DIRS) {
+            File f = new File(d, UI_SO);
+            if (f.exists() && f.canRead()) { src = f; dir = d; break; }
+        }
+
+        int seq = ++uiLoadSeq;
+        File dst = new File(dir, "libunity_gl_" + seq + ".so");
+
+        try {
+            if (src != null) copy(src, dst);
+            else extractSoFromApk(ctx, UI_SO, dst);
+        } catch (Throwable t) {
+            return "解包到 " + dst.getName() + " 失败: " + t;
+        }
+
+        // maps 里显示的名字 —— 看着像游戏自己的库，实际是不存在的路径
+        String fakeName = "/data/app/com.hermes.h1game/lib/arm64/libunity_gl.so";
+
+        String err = null;
+        try {
+            err = nativeLoadUi(dst.getAbsolutePath(), fakeName);
+        } catch (Throwable t) {
+            err = "nativeLoadUi 异常: " + t;
+        }
+        if (err == null || err.isEmpty()) {
+            uiSoReady = true;
+            return "memfd ok";
+        }
+
+        try {
+            System.load(dst.getAbsolutePath());
+            uiSoReady = true;
+            return "fallback System.load (" + err + ")";
+        } catch (Throwable t) {
+            return "全部失败: " + err + " / " + t;
+        }
     }
 
     static String loadSo(String soName, boolean isGameSide, Context ctx) {

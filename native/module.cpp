@@ -26,6 +26,11 @@
 #include <dlfcn.h>
 #include <link.h>
 #include <elf.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <android/dlext.h>
 #include <android/log.h>
 #include <string>
 #include <vector>
@@ -1099,6 +1104,128 @@ extern "C" void native_tick() {
     }
 
     refresh_status();   // 状态快照每帧刷一次，UI 侧随时能读
+}
+
+// =====================================================================
+// UI so：从 memfd 加载，不落盘
+//
+// 原本是 HookEntry 用 System.load 加载私有目录里的 libimgui_overlay_1.so，
+// 那个文件会一直躺在盘上，进程外一扫就能看到（maps 过滤只管进程内）。
+//
+// 现在改成：文件读到 memfd → android_dlopen_ext 从 fd 加载 →
+// maps 里显示的名字是我们自己编的假路径 → 落盘文件立刻 unlink。
+//
+// 代价：ART 不认识这个模块，所有 Java_com_xxx 形式的 JNI 符号都不会被解析
+// （也没人调），所以 JNI 入口全部收回到本 so，这里 dlsym 到 ui_* 再转一手。
+// =====================================================================
+struct UiFns {
+    void (*init)(void);
+    void (*set_fonts)(const char*, const char*);
+    int  (*touch)(int, float, float, float, float);
+    void (*key)(int, int, int);
+    int  (*want_text_input)(void);
+    int  (*ready)(void);
+};
+
+static UiFns g_uiFns = {};
+static void* g_uiHandle = nullptr;
+static char  g_uiName[256] = {0};
+
+static bool load_ui_from_memfd(const char* soPath, const char* fakeName) {
+    int in = open(soPath, O_RDONLY | O_CLOEXEC);
+    if (in < 0) { LERR("[UI] open failed: %s errno=%d", soPath, errno); return false; }
+
+    std::vector<char> buf;
+    {
+        char tmp[65536];
+        ssize_t n;
+        while ((n = read(in, tmp, sizeof(tmp))) > 0) buf.insert(buf.end(), tmp, tmp + n);
+    }
+    close(in);
+    if (buf.size() < 4096) { LERR("[UI] so too small: %zu", buf.size()); return false; }
+
+    int fd = (int)syscall(__NR_memfd_create, "u", 1u /*MFD_CLOEXEC*/);
+    if (fd < 0) { LERR("[UI] memfd_create errno=%d", errno); return false; }
+
+    size_t off = 0;
+    while (off < buf.size()) {
+        ssize_t w = write(fd, buf.data() + off, buf.size() - off);
+        if (w <= 0) { close(fd); LERR("[UI] write memfd errno=%d", errno); return false; }
+        off += (size_t)w;
+    }
+
+    android_dlextinfo ext{};
+    ext.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
+    ext.library_fd = fd;
+
+    void* h = android_dlopen_ext(fakeName, RTLD_NOW | RTLD_GLOBAL, &ext);
+    close(fd);
+    if (!h) { LERR("[UI] android_dlopen_ext failed: %s", dlerror()); return false; }
+
+    g_uiHandle = h;
+    snprintf(g_uiName, sizeof(g_uiName), "%s", fakeName);
+
+    g_uiFns.init            = (void (*)(void))dlsym(h, "ui_init");
+    g_uiFns.set_fonts       = (void (*)(const char*, const char*))dlsym(h, "ui_set_fonts");
+    g_uiFns.touch           = (int (*)(int, float, float, float, float))dlsym(h, "ui_touch");
+    g_uiFns.key             = (void (*)(int, int, int))dlsym(h, "ui_key");
+    g_uiFns.want_text_input = (int (*)(void))dlsym(h, "ui_want_text_input");
+    g_uiFns.ready           = (int (*)(void))dlsym(h, "ui_ready");
+
+    if (!g_uiFns.init || !g_uiFns.touch) {
+        LERR("[UI] symbols missing init=%p touch=%p", (void*)g_uiFns.init, (void*)g_uiFns.touch);
+        return false;
+    }
+
+    g_uiFns.init();
+
+    // 落盘文件删掉。映射已经建立，删了不影响进程，重开游戏会重新解一份。
+    unlink(soPath);
+
+    L("[UI] loaded from memfd as '%s' handle=%p", fakeName, h);
+    return true;
+}
+
+static std::string jstr(JNIEnv* env, jstring s) {
+    std::string out;
+    if (s) {
+        const char* raw = env->GetStringUTFChars(s, nullptr);
+        if (raw) { out = raw; env->ReleaseStringUTFChars(s, raw); }
+    }
+    return out;
+}
+
+// 返回 "" 表示成功，否则是错误说明（Java 那边据此决定要不要走 System.load 兜底）
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_moss_mmdruntime_HookEntry_nativeLoadUi(JNIEnv* env, jclass, jstring soPath, jstring fakeName) {
+    std::string p = jstr(env, soPath);
+    std::string f = jstr(env, fakeName);
+    if (p.empty() || f.empty()) return env->NewStringUTF("bad args");
+    if (g_uiHandle) return env->NewStringUTF("");
+    if (!load_ui_from_memfd(p.c_str(), f.c_str())) {
+        return env->NewStringUTF("memfd load failed (see log)");
+    }
+    return env->NewStringUTF("");
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_moss_mmdruntime_HookEntry_nativeUiFonts(JNIEnv* env, jclass, jstring latin, jstring cjk) {
+    if (!g_uiFns.set_fonts) return;
+    std::string l = jstr(env, latin), c = jstr(env, cjk);
+    g_uiFns.set_fonts(l.c_str(), c.c_str());
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_moss_mmdruntime_HookEntry_nativeUiTouch(JNIEnv*, jclass,
+                                                 jint action, jfloat x, jfloat y,
+                                                 jfloat vw, jfloat vh) {
+    if (!g_uiFns.touch) return JNI_FALSE;
+    return g_uiFns.touch((int)action, x, y, vw, vh) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_moss_mmdruntime_HookEntry_nativeUiReady(JNIEnv*, jclass) {
+    return (g_uiFns.ready && g_uiFns.ready()) ? JNI_TRUE : JNI_FALSE;
 }
 
 // =====================================================================
