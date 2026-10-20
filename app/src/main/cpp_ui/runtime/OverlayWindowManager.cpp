@@ -14,6 +14,7 @@ ImVec2 lastWindowPosition = ImVec2(0, 0);
 ImVec2 lastWindowSize = ImVec2(0, 0);
 bool showOverlay = true;
 bool isDragging = false;
+bool collapsed = false;
 
 static float ResponsiveWindowWidth(float percent, float minValue, float maxValue) {
     float available = std::max(320.0f, (float)screenW - Theme::Spacing::WindowSafeMargin);
@@ -28,6 +29,10 @@ static float ResponsiveWindowHeight(float percent, float minValue, float maxValu
 }
 
 ImVec2 SizeFor(Screen screen) {
+    if (collapsed) {
+        // 横栏：高度固定 56，宽度按屏宽收缩
+        return ImVec2(std::min(520.0f, (float)std::max(240, screenW - 48)), 56.0f);
+    }
     if (screen == Screen::Login) {
         return ImVec2(ResponsiveWindowWidth(0.86f, 430.0f, 590.0f),
                       ResponsiveWindowHeight(0.44f, 560.0f, 720.0f));
@@ -54,6 +59,10 @@ void RequestClose() {
     showOverlay = false;
     g_CloseRequested = true;
 }
+
+void RequestCollapse() { collapsed = true; }
+
+void RequestExpand() { collapsed = false; }
 
 void BeginWindow(const char* id, const char* title) {
     ImVec2 size = SizeFor(currentScreen);
@@ -98,13 +107,19 @@ void BeginWindow(const char* id, const char* title) {
     dl->AddRectFilled(ImVec2(cx - 18.0f, min.y + 15.0f), ImVec2(cx + 18.0f, min.y + 19.0f),
                       ImGui::GetColorU32(Theme::WithAlpha(Theme::Colors::TextSecondary, 0.55f)), 3.0f);
 
+    if (collapsed) {
+        // 折叠态：不画标题和关闭按钮，整个内容区交给横栏 UI
+        return;
+    }
+
     ImVec2 closePos(max.x - 42.0f, min.y + 16.0f);
     ImGui::SetCursorScreenPos(closePos);
     bool closeClicked = ImGui::InvisibleButton("##close", ImVec2(30.0f, 30.0f));
     ImU32 closeColor = ImGui::GetColorU32(ImGui::IsItemHovered() ? Theme::Colors::TextPrimary : Theme::Colors::TextSecondary);
     dl->AddLine(ImVec2(closePos.x + 9, closePos.y + 9), ImVec2(closePos.x + 21, closePos.y + 21), closeColor, 1.6f);
     dl->AddLine(ImVec2(closePos.x + 21, closePos.y + 9), ImVec2(closePos.x + 9, closePos.y + 21), closeColor, 1.6f);
-    if (closeClicked) RequestClose();
+    // 主面板的 X = 折叠成横栏，不是退出。横栏上另有真正的退出按钮。
+    if (closeClicked) RequestCollapse();
 
     if (title && title[0]) {
         ImGui::SetCursorPos(ImVec2(56.0f, 34.0f));

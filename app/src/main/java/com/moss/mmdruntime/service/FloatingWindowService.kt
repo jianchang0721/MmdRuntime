@@ -42,6 +42,7 @@ class FloatingWindowService : Service() {
     private var dragStartY = 0
     private var screenWidth = 1080
     private var screenHeight = 2400
+    private var windowCollapsed = false
     private lateinit var boundsManager: OverlayBoundsManager
 
     private companion object {
@@ -49,11 +50,25 @@ class FloatingWindowService : Service() {
         const val CHANNEL_ID = "floating_window_channel"
         const val TOUCH_NONE = 0
         const val TOUCH_DRAG = 1
+        const val TOUCH_PENDING = 2      // 按下但还没确定是拖还是点
         const val DRAG_HANDLE_HEIGHT = 56f
         const val CLOSE_ZONE_WIDTH = 120f
+        const val DRAG_THRESHOLD_PX = 24f  // 位移超过它才算拖拽，否则当点击
+        @Volatile var isRunning = false
+
+        /** 游戏联动：服务已在跑（折叠横栏）时展开。由 GameLaunchReceiver 调用。 */
+        fun expandFromGame() {
+            try { JniBridge.requestExpand() } catch (_: Throwable) { }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 服务已在跑时再来一次启动（游戏联动）→ 折叠的横栏展开回面板
+        mainHandler.post { expandFromGame() }
+        return START_NOT_STICKY
+    }
 
     /** 桥目录在 /data/local/tmp 下，App uid 没有写权限建不了目录；借 root 建一次。 */
     private fun ensureBridgeDirectory() {
@@ -92,6 +107,7 @@ class FloatingWindowService : Service() {
         setupForegroundNotification()
         prepareImGuiFonts()
         setupOverlay()
+        isRunning = true
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -220,20 +236,33 @@ class FloatingWindowService : Service() {
             holder.setFormat(PixelFormat.TRANSLUCENT)
             renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
             setOnTouchListener { _, event ->
+                // isCollapsed 每帧在 syncActiveWindowBounds 里刷新；
+                // 折叠时整条横栏都是拖动区，展开时只有顶部标题栏是。
+                val dragZone = windowCollapsed || event.y <= DRAG_HANDLE_HEIGHT
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         dragStartRawX = event.rawX
                         dragStartRawY = event.rawY
                         dragStartX = params.x
                         dragStartY = params.y
-                        touchMode = if (
-                            event.y <= DRAG_HANDLE_HEIGHT &&
-                            event.x <= glSurfaceView.width - CLOSE_ZONE_WIDTH
-                        ) TOUCH_DRAG else TOUCH_NONE
-                        if (touchMode == TOUCH_DRAG) return@setOnTouchListener true
+                        touchMode = if (dragZone) TOUCH_PENDING else TOUCH_NONE
+                        // 非拖拽区：直接交给 ImGui
+                        if (touchMode == TOUCH_NONE) {
+                            JniBridge.onTouchEvent(0, event.x, event.y)
+                        }
+                        return@setOnTouchListener true
                     }
 
                     MotionEvent.ACTION_MOVE -> {
+                        if (touchMode == TOUCH_PENDING) {
+                            val dx = event.rawX - dragStartRawX
+                            val dy = event.rawY - dragStartRawY
+                            if (dx * dx + dy * dy >= DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) {
+                                touchMode = TOUCH_DRAG
+                            } else {
+                                return@setOnTouchListener true  // 还没到阈值，继续观察
+                            }
+                        }
                         if (touchMode == TOUCH_DRAG) {
                             val dx = event.rawX - dragStartRawX
                             val dy = event.rawY - dragStartRawY
@@ -244,24 +273,26 @@ class FloatingWindowService : Service() {
                             }
                             return@setOnTouchListener true
                         }
+                        JniBridge.onTouchEvent(2, event.x, event.y)
+                        return@setOnTouchListener true
                     }
 
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        if (touchMode == TOUCH_DRAG) {
-                            touchMode = TOUCH_NONE
+                        val wasPending = touchMode == TOUCH_PENDING
+                        val wasDrag = touchMode == TOUCH_DRAG
+                        touchMode = TOUCH_NONE
+                        if (wasDrag) return@setOnTouchListener true
+                        if (wasPending) {
+                            // 位移没超阈值 = 点击：down+up 成对发给 ImGui，
+                            // 让折叠横栏上的「展开热区 / 退出 X」能响应。
+                            JniBridge.onTouchEvent(0, event.x, event.y)
+                            JniBridge.onTouchEvent(1, event.x, event.y)
                             return@setOnTouchListener true
                         }
-                        touchMode = TOUCH_NONE
+                        JniBridge.onTouchEvent(1, event.x, event.y)
+                        return@setOnTouchListener true
                     }
                 }
-
-                val action = when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> 0
-                    MotionEvent.ACTION_UP -> 1
-                    MotionEvent.ACTION_MOVE -> 2
-                    else -> -1
-                }
-                if (action != -1) JniBridge.onTouchEvent(action, event.x, event.y)
                 true
             }
         }
@@ -289,6 +320,8 @@ class FloatingWindowService : Service() {
     private fun syncActiveWindowBounds() {
         if (touchMode == TOUCH_DRAG || !::glSurfaceView.isInitialized || !glSurfaceView.isAttachedToWindow) return
         val desired = try { JniBridge.getDesiredWindowSize() } catch (_: Exception) { return }
+        // 折叠横栏高度固定 56；native 折叠态上报的尺寸必然小于 100 高
+        if (desired.size >= 2) windowCollapsed = desired[1] < 100f
 
         mainHandler.post {
             if (!glSurfaceView.isAttachedToWindow) return@post
@@ -332,6 +365,7 @@ class FloatingWindowService : Service() {
     }
 
     override fun onDestroy() {
+        isRunning = false
         updateOverlayRuntimeState(surfaceActive = false)
         if (::glSurfaceView.isInitialized && glSurfaceView.isAttachedToWindow) {
             windowManager.removeView(glSurfaceView)

@@ -134,6 +134,64 @@ void DrawGamesScreen() {
 }
 
 // =====================================================================
+// 折叠横栏：可拖动（Kotlin 拖拽区整条都是）、点击展开、右侧 X 真正退出
+// =====================================================================
+void DrawCollapsedBar(Bridge::BridgeModel& Model) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 wp = ImGui::GetWindowPos();
+    float w = ImGui::GetWindowWidth();
+    float h = ImGui::GetWindowHeight();
+
+    // 胶囊底
+    dl->AddRectFilled(wp, ImVec2(wp.x + w, wp.y + h),
+                      ImGui::GetColorU32(Theme::Colors::Panel), Theme::Sizes::WindowRounding);
+    dl->AddRect(wp, ImVec2(wp.x + w, wp.y + h),
+                ImGui::GetColorU32(Theme::WithAlpha(Theme::Colors::Accent, 0.5f)),
+                Theme::Sizes::WindowRounding, 0, 1.4f);
+
+    // 左侧状态点：connected=绿，否则=黄
+    const bool connected = Model.state == Bridge::GameState::Attached ||
+                           Model.state == Bridge::GameState::Active;
+    dl->AddCircleFilled(ImVec2(wp.x + 30.0f, wp.y + h * 0.5f), 7.0f,
+                        ImGui::GetColorU32(connected ? Theme::Colors::Success
+                                                     : Theme::Colors::Warning), 24);
+
+    // 标题
+    ImGui::SetCursorPos(ImVec2(48.0f, (h - ImGui::GetTextLineHeight()) * 0.5f));
+    if (g_HeadingFont) ImGui::PushFont(g_HeadingFont);
+    ImGui::TextUnformatted("MMD RUNTIME");
+    if (g_HeadingFont) ImGui::PopFont();
+
+    // 中间状态文字（折叠时也显示游戏连接状态）
+    ImGui::SetCursorPos(ImVec2(210.0f, (h - ImGui::GetTextLineHeight()) * 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::TextSecondary);
+    ImGui::TextUnformatted(Bridge::GameStateName(Model.state));
+    ImGui::PopStyleColor();
+
+    // 右侧：真正退出按钮（小 X）
+    const float exitSize = 30.0f;
+    ImVec2 exitPos(wp.x + w - exitSize - 14.0f, wp.y + (h - exitSize) * 0.5f);
+    ImGui::SetCursorScreenPos(exitPos);
+    bool exitClicked = ImGui::InvisibleButton("##bar_exit", ImVec2(exitSize, exitSize));
+    ImU32 exitColor = ImGui::GetColorU32(
+        ImGui::IsItemHovered() ? Theme::Colors::Error : Theme::Colors::TextSecondary);
+    dl->AddLine(ImVec2(exitPos.x + 8, exitPos.y + 8), ImVec2(exitPos.x + 22, exitPos.y + 22),
+                exitColor, 1.8f);
+    dl->AddLine(ImVec2(exitPos.x + 22, exitPos.y + 8), ImVec2(exitPos.x + 8, exitPos.y + 22),
+                exitColor, 1.8f);
+    if (exitClicked) WindowManager::RequestClose();
+
+    // 剩余区域整个可点 = 展开。留出 X 的位置，其余全算展开热区。
+    ImVec2 expandMin(wp.x + 8.0f, wp.y + 6.0f);
+    ImVec2 expandMax(wp.x + w - exitSize - 22.0f, wp.y + h - 6.0f);
+    ImGui::SetCursorScreenPos(expandMin);
+    bool expandClicked = ImGui::InvisibleButton("##bar_expand",
+                                                ImVec2(expandMax.x - expandMin.x,
+                                                       expandMax.y - expandMin.y));
+    if (expandClicked) WindowManager::RequestExpand();
+}
+
+// =====================================================================
 // 主面板
 // =====================================================================
 void DrawMenuScreen() {
@@ -141,6 +199,12 @@ void DrawMenuScreen() {
 
     Bridge::PollStatus();
     Bridge::BridgeModel& Model = Shared();
+
+    if (WindowManager::collapsed) {
+        DrawCollapsedBar(Model);
+        WindowManager::EndWindow();
+        return;
+    }
 
     if (ImGui::BeginTabBar("##Tabs")) {
         // 每个 Tab 内独立滚动；高度 0 = 吃满剩余，内容超高自动滚

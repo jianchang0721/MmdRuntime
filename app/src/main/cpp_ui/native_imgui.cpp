@@ -172,6 +172,21 @@ Java_com_moss_mmdruntime_service_JniBridge_checkCloseRequested(JNIEnv*, jobject)
     return requested ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_com_moss_mmdruntime_service_JniBridge_isCollapsed(JNIEnv*, jobject) {
+    return WindowManager::collapsed ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_moss_mmdruntime_service_JniBridge_requestExpand(JNIEnv*, jobject) {
+    WindowManager::RequestExpand();
+}
+
+JNIEXPORT void JNICALL
+Java_com_moss_mmdruntime_service_JniBridge_requestCollapse(JNIEnv*, jobject) {
+    WindowManager::RequestCollapse();
+}
+
 JNIEXPORT jfloatArray JNICALL
 Java_com_moss_mmdruntime_service_JniBridge_getDesiredWindowSize(JNIEnv* env, jobject) {
     ImVec2 size = WindowManager::SizeFor(WindowManager::currentScreen);

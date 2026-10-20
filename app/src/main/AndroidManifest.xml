@@ -25,6 +25,15 @@
             </intent-filter>
         </activity>
 
+        <!-- 游戏启动联动：游戏侧 HookEntry 发显式广播，这里收到就拉起悬浮窗 -->
+        <receiver
+                android:name=".service.GameLaunchReceiver"
+                android:exported="true">
+            <intent-filter>
+                <action android:name="com.moss.mmdruntime.action.GAME_LAUNCHED"/>
+            </intent-filter>
+        </receiver>
+
         <!-- ImGui 悬浮窗服务 -->
         <service
                 android:name=".service.FloatingWindowService"

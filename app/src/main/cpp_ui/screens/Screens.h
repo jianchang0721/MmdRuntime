@@ -10,6 +10,8 @@ void DrawLoginScreen();
 void DrawGamesScreen();
 void DrawMenuScreen();
 
+void DrawCollapsedBar(Bridge::BridgeModel& Model);
+
 void DrawOverviewTab(Bridge::BridgeModel& Model);
 void DrawRenderTab(Bridge::BridgeModel& Model);
 void DrawBoneTab(Bridge::BridgeModel& Model);

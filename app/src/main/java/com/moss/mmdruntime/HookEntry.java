@@ -60,6 +60,10 @@ public class HookEntry implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
         if (!PKG.equals(lp.packageName)) return;
         XposedBridge.log(TAG + ": hooked " + lp.packageName + " pid=" + Process.myPid());
+        // 联动悬浮窗：游戏一启动就通知 MmdRuntime App 弹窗。
+        // 显式广播不需要任何权限、不依赖 root；Application 未就绪时 receiver
+        // 端收不到也由下面的 Activity onCreate 重发一次兜底。
+        notifyGameLaunched();
         try {
             Class<?> actCls = XposedHelpers.findClass("android.app.Activity", lp.classLoader);
 
@@ -73,6 +77,8 @@ public class HookEntry implements IXposedHookLoadPackage {
                         lastStatus = doLoad();
                         XposedBridge.log(TAG + ": " + lastStatus);
                     }
+                    // Application 此时必然就绪，重发一次联动广播兜底
+                    notifyGameLaunched();
                 }
             });
 
@@ -95,6 +101,24 @@ public class HookEntry implements IXposedHookLoadPackage {
             });
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": hook fail " + t);
+        }
+    }
+
+    // ---------------- 联动悬浮窗 ----------------
+
+    /** 向 MmdRuntime App 发「游戏已启动」显式广播。无权限要求、无 root 依赖。 */
+    static void notifyGameLaunched() {
+        try {
+            Class<?> atCls = XposedHelpers.findClass("android.app.ActivityThread", null);
+            Object app = XposedHelpers.callStaticMethod(atCls, "currentApplication");
+            if (app instanceof android.content.Context) {
+                android.content.Intent i =
+                        new android.content.Intent("com.moss.mmdruntime.action.GAME_LAUNCHED");
+                i.setPackage("com.moss.mmdruntime");
+                ((android.content.Context) app).sendBroadcast(i);
+            }
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": notify fail " + t);
         }
     }
 

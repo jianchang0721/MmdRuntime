@@ -25,4 +25,7 @@ object JniBridge {
     external fun wantTextInput(): Boolean
     external fun checkCloseRequested(): Boolean
     external fun getDesiredWindowSize(): FloatArray
+    external fun isCollapsed(): Boolean
+    external fun requestExpand()
+    external fun requestCollapse()
 }
