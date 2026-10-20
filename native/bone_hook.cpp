@@ -17,6 +17,7 @@
 // 我们在它执行前，如果发现 data 是我们的指针，就把 data/size/capacity
 // 换回 Unity 原来的值，让 Unity 正常释放它自己的内存。
 // =====================================================================
+#include "logsink.h"
 #include "bone_hook.h"
 
 #include <android/log.h>
@@ -32,7 +33,7 @@
 #include "dobby/dobby.h"
 
 #define HTAG "MmdBoneHook"
-#define HLOG(...) __android_log_print(ANDROID_LOG_INFO, HTAG, __VA_ARGS__)
+#define HLOG(...) logsink::Write(__VA_ARGS__)
 
 namespace bonehook {
 

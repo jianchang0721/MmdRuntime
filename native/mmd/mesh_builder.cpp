@@ -11,6 +11,7 @@
 //   4. bindpose = 骨骼世界矩阵的逆。MMD 骨骼初始旋转为单位，所以就是平移取负
 //   5. Unity 的 Matrix4x4 内存序是 m00,m10,m20,m30,m01,m11,... 平移在 12/13/14
 // =====================================================================
+#include "logsink.h"
 #include "mesh_builder.h"
 
 #include <android/log.h>
@@ -21,7 +22,7 @@
 #include "unity/unity_objects.h"
 
 #define MTAG "MmdMesh"
-#define MLOG(...) __android_log_print(ANDROID_LOG_INFO, MTAG, __VA_ARGS__)
+#define MLOG(...) logsink::Write(__VA_ARGS__)
 
 namespace mmd {
 

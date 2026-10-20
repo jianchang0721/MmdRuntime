@@ -1,6 +1,7 @@
 // =====================================================================
 // loader.cpp
 // =====================================================================
+#include "logsink.h"
 #include "loader.h"
 
 #include <android/log.h>
@@ -14,7 +15,7 @@
 #include "unity/unity_objects.h"
 
 #define LTAG "MmdLoader"
-#define LLOG(...) __android_log_print(ANDROID_LOG_INFO, LTAG, __VA_ARGS__)
+#define LLOG(...) logsink::Write(__VA_ARGS__)
 
 namespace game {
 

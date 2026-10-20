@@ -9,6 +9,7 @@
 // LoadRawTextureData 如果被 strip 了，就退回 SetPixels32(Color32[])；
 // 两个都没有就只建个纯色贴图，不让整个加载流程挂在这里。
 // =====================================================================
+#include "logsink.h"
 #include "texture.h"
 
 #include <android/log.h>
@@ -33,7 +34,7 @@
 #include "unity/unity_objects.h"
 
 #define TTAG "MmdTexture"
-#define TLOG(...) __android_log_print(ANDROID_LOG_INFO, TTAG, __VA_ARGS__)
+#define TLOG(...) logsink::Write(__VA_ARGS__)
 
 namespace mmd {
 namespace {

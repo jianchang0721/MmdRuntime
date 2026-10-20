@@ -37,6 +37,7 @@
 
 #include "mmd/pmx.h"
 #include "bone_hook.h"
+#include "logsink.h"
 #include "stealth.h"
 #include "public/mmd_api.h"
 #include "game/loader.h"
@@ -100,6 +101,16 @@ static void L(const char* fmt, ...) {
 }
 
 #define LERR(...) L(__VA_ARGS__)
+
+// 给 logsink 用的转发：别的模块拼好字符串丢过来，这里补时间戳写文件
+static void logsink_forward(const char* fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    L("%s", buf);
+}
 
 // =====================================================================
 // il2cpp 绑定：不能用 dlopen，从 /proc/self/maps 拿 base，手工解析 .dynsym
@@ -1448,7 +1459,11 @@ Java_com_moss_mmdruntime_HookEntry_nativeTouch(JNIEnv*, jclass,
 JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
     g_vm = vm;
 
-    // 第一件事：把 /proc 里我们的痕迹盖掉。越早装越安全——
+    // 先接日志汇：stealth / mmd / game 各层都靠它写文件，
+    // 不接的话 logcat 一被限流就什么也看不见。
+    logsink::Set(logsink_forward);
+
+    // 然后把 /proc 里我们的痕迹盖掉。越早装越安全——
     // 游戏侧反作弊可能在任何时刻扫 maps，晚一秒就多一秒空窗期。
     stealth::Install();
 

@@ -7,6 +7,7 @@
 //      顺序反了会被 SetParent 的 worldPositionStays 把位置算飞
 //   ③ 记录每根骨骼 Transform 的 instanceID（后面写 m_Bones 用）
 // =====================================================================
+#include "logsink.h"
 #include "skeleton.h"
 
 #include <android/log.h>
@@ -16,7 +17,7 @@
 #include "unity/unity_objects.h"
 
 #define STAG "MmdSkeleton"
-#define SLOG(...) __android_log_print(ANDROID_LOG_INFO, STAG, __VA_ARGS__)
+#define SLOG(...) logsink::Write(__VA_ARGS__)
 
 namespace mmd {
 
@@ -112,7 +113,11 @@ bool Skeleton::build(const Model& model, void* rootParent) {
 
     SLOG("[SKEL] built=%d/%d roots=%d maxDepth=%d instanceIds=%d",
          built_, n, roots_, maxDepth_, idOk);
-    return built_ == n;
+
+    // 以前这里写的是 built_ == n，少一根就整个失败，直接把整条加载链卡死。
+    // 实际上少数骨骼建不出来只会让对应顶点权重失效（变成原点），
+    // 不至于让整个模型上不了屏。八成以上就继续，剩下的看日志定位。
+    return built_ >= (n * 8 / 10);
 }
 
 void Skeleton::destroy() {

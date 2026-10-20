@@ -14,6 +14,7 @@
 // 为什么用 memfd 而不是临时文件：不落盘、不占 inode、进程退出自动释放、
 // /proc/self/fd 里看到的是 /memfd:j (deleted)，比 /tmp/xxx 干净得多。
 // =====================================================================
+#include "logsink.h"
 #include "stealth.h"
 
 #include <android/log.h>
@@ -35,7 +36,7 @@
 #include "dobby/dobby.h"
 
 #define STAG "MmdStealth"
-#define SLOG(...) __android_log_print(ANDROID_LOG_INFO, STAG, __VA_ARGS__)
+#define SLOG(...) logsink::Write(__VA_ARGS__)
 
 #ifndef MFD_CLOEXEC
 #define MFD_CLOEXEC 0x0001U

@@ -6,6 +6,7 @@
 //   SetColor(string, Color)      vs  SetColor(int, Color)
 // 所以这里自己遍历方法表，按「第一个参数是不是 System.String」筛。
 // =====================================================================
+#include "logsink.h"
 #include "material.h"
 
 #include <android/log.h>
@@ -17,7 +18,7 @@
 #include "unity/unity_objects.h"
 
 #define MATTAG "MmdMaterial"
-#define MTLOG(...) __android_log_print(ANDROID_LOG_INFO, MATTAG, __VA_ARGS__)
+#define MTLOG(...) logsink::Write(__VA_ARGS__)
 
 namespace mmd {
 namespace {

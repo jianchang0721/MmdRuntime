@@ -1,6 +1,7 @@
 // =====================================================================
 // smr_bind.cpp
 // =====================================================================
+#include "logsink.h"
 #include "smr_bind.h"
 
 #include <android/log.h>
@@ -12,7 +13,7 @@
 #include "unity/unity_objects.h"
 
 #define GTAG "MmdGame"
-#define GLOG(...) __android_log_print(ANDROID_LOG_INFO, GTAG, __VA_ARGS__)
+#define GLOG(...) logsink::Write(__VA_ARGS__)
 
 namespace game {
 

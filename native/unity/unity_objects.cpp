@@ -1,6 +1,7 @@
 // =====================================================================
 // unity_objects.cpp
 // =====================================================================
+#include "logsink.h"
 #include "unity_objects.h"
 
 #include <android/log.h>
@@ -10,7 +11,7 @@
 #include "il2cpp_api.h"
 
 #define UTAG "MmdUnityObj"
-#define ULOG(...) __android_log_print(ANDROID_LOG_INFO, UTAG, __VA_ARGS__)
+#define ULOG(...) logsink::Write(__VA_ARGS__)
 
 // 来自 module.cpp
 extern Il2CppApi g_api;

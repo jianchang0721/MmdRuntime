@@ -21,6 +21,7 @@ add_library(mmdruntime SHARED
     mmd/mesh_builder.cpp
     mmd/texture.cpp
     mmd/material.cpp
+    logsink.cpp
     stealth.cpp
     unity/unity_objects.cpp
     game/smr_bind.cpp
