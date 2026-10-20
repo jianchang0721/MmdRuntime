@@ -579,8 +579,28 @@ static void probe_bones_layout() {
     int32_t c1 = *(int32_t*)(base + 0x1f4);
     int32_t c2 = *(int32_t*)(base + 0x1f8);
     int32_t c3 = *(int32_t*)(base + 0x1e8);
-    L("[BONE] capacity candidates: +0x1f4=%d  +0x1f8=%d  +0x1e8=%d", c1, c2, c3);
-    L("[BONE] verdict: need >= 224. %s", (c1 >= 224 || c2 >= 224) ? "SOME-CANDIDATE-OK" : "ALL-TOO-SMALL");
+    // +0x1f8 是 int64 capacity（实测 144 = 2×72，标准 vector 扩容策略）
+    int64_t cap64 = *(int64_t*)(base + 0x1f8);
+    L("[BONE] size@0x1f0=%d  capacity@0x1f8=%lld", sizeVal, (long long)cap64);
+    L("[BONE] verdict: need 224, have cap %lld -> %s",
+      (long long)cap64, cap64 >= 224 ? "ENOUGH" : "NEED-REALLOC");
+
+    // ---- 零风险写测试：把 size 顶到 capacity（不越界），读回，还原 ----
+    int32_t* sizePtr = (int32_t*)(base + 0x1f0);
+    int32_t orig = *sizePtr;
+    int32_t target = (cap64 > orig && cap64 < 4096) ? (int32_t)cap64 : orig;
+
+    *sizePtr = target;
+    Il2CppObject* after = invoke(g_mGetBones, s.obj, nullptr);
+    int32_t afterN = after ? (int32_t)((Il2CppArray*)after)->max_length : -1;
+    L("[BONE] size write test: %d -> %d, get_bones()=%d  %s",
+      orig, target, afterN, afterN == target ? "WRITE-OK" : "WRITE-FAIL");
+
+    *sizePtr = orig;
+    Il2CppObject* back = invoke(g_mGetBones, s.obj, nullptr);
+    int32_t backN = back ? (int32_t)((Il2CppArray*)back)->max_length : -1;
+    L("[BONE] restored: get_bones()=%d  %s", backN, backN == orig ? "RESTORE-OK" : "RESTORE-FAIL");
+
     L("========== [BONE] LAYOUT DUMP END ==========");
 }
 
