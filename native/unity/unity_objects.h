@@ -48,6 +48,9 @@ void* u_method(void* klass, const char* name, int paramCount); // 找方法（�
 // Unity 的 .ctor / set_position / SetColor 之类重载极多，只按个数筛会撞错，
 // 而撞错的表现是 runtime_invoke 不抛异常、安安静静返回 nullptr。
 void* u_method_typed(void* klass, const char* name, int paramCount, const char* p0Class);
+
+// 只在本类找，不沿父链。找 .ctor 必须用它。
+void* u_method_own(void* klass, const char* name, int paramCount);
 void* u_call(void* obj, void* method, void** args);        // runtime_invoke，返回 Il2CppObject*
 
 // 调 void 方法，只看有没有抛异常。

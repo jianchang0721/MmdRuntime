@@ -56,6 +56,32 @@ Il2CppClass* find_class_any(const char* ns, const char* name) {
     return nullptr;
 }
 
+// 只在 klass 本类里找，不沿父链。
+//
+// 为什么需要：find_method 会往上找父类。找 .ctor 时会出大问题 ——
+// 子类自己没对应构造函数（被 strip 了）时，会撞到父类的 .ctor，
+// 拿父类构造函数初始化子类对象是错的（native 侧初始化路径不一样）。
+const MethodInfo* find_method_own(Il2CppClass* klass, const char* name,
+                                  int paramCount, const char* p0Class) {
+    if (!klass) return nullptr;
+    void* iter = nullptr;
+    const MethodInfo* m;
+    while ((m = g_api.class_get_methods(klass, &iter))) {
+        const char* nm = g_api.method_get_name(m);
+        if (!nm || strcmp(nm, name) != 0) continue;
+        if (paramCount >= 0 && (int)g_api.method_get_param_count(m) != paramCount) continue;
+        if (p0Class && g_api.method_get_param && g_api.class_from_type && g_api.class_get_name) {
+            const Il2CppType* t = g_api.method_get_param(m, 0);
+            if (!t) continue;
+            Il2CppClass* pc = g_api.class_from_type(t);
+            const char* cn = pc ? g_api.class_get_name(pc) : nullptr;
+            if (!cn || strcmp(cn, p0Class) != 0) continue;
+        }
+        return m;
+    }
+    return nullptr;
+}
+
 // 按名字找方法；指定 paramCount 时按参数个数筛（区分重载）
 const MethodInfo* find_method(Il2CppClass* klass, const char* name, int paramCount = -1) {
     if (!klass) return nullptr;
@@ -328,6 +354,10 @@ int created_nodes() { return g_created; }
 
 bool u_call_void(void* obj, void* method, void** args) {
     return invoke_void((const MethodInfo*)method, obj, args);
+}
+
+void* u_method_own(void* klass, const char* name, int paramCount) {
+    return (void*)find_method_own((Il2CppClass*)klass, name, paramCount, nullptr);
 }
 
 void* u_method_typed(void* klass, const char* name, int paramCount, const char* p0Class) {

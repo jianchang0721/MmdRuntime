@@ -72,7 +72,23 @@ bool init_mesh_classes(MeshClasses& mc) {
     mc.meshCls = uo::u_class("UnityEngine", "Mesh");
     if (!mc.meshCls) { MLOG("[MESH] Mesh class not found"); return false; }
 
-    mc.mCtor            = uo::u_method(mc.meshCls, ".ctor", 0);
+    // .ctor 必须只在本类找：find_method 会沿父链，Mesh 自己没无参构造时
+    // 会撞到 Object..ctor()，拿父类构造函数初始化 Mesh 是错的（native 侧
+    // 初始化路径不一样）。build-55 就停在这里，日志只到 [MESH] elems。
+    mc.mCtor = uo::u_method_own(mc.meshCls, ".ctor", 0);
+    {
+        void* iter = nullptr;
+        const MethodInfo* m;
+        int idx = 0;
+        while ((m = g_api.class_get_methods((Il2CppClass*)mc.meshCls, &iter))) {
+            const char* nm = g_api.method_get_name(m);
+            if (!nm || strcmp(nm, ".ctor") != 0) continue;
+            MLOG("[MESH]   meshCtor#%d params=%u %s", idx++,
+                 g_api.method_get_param_count(m),
+                 (m == mc.mCtor) ? "<== SELECTED" : "");
+        }
+        if (idx == 0) MLOG("[MESH]   Mesh 本类没有任何 .ctor（被 strip？）");
+    }
     mc.mSetVertices     = uo::u_method(mc.meshCls, "set_vertices", 1);
     mc.mSetNormals      = uo::u_method(mc.meshCls, "set_normals", 1);
     mc.mSetUV           = uo::u_method(mc.meshCls, "set_uv", 1);
@@ -124,9 +140,20 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
     if (!init_mesh_classes(mc)) return false;
 
     // ---- 1) new Mesh ----
+    MLOG("[MESH] step0 object_new(Mesh)...");
     void* mesh = uo::u_new_object(mc.meshCls);
+    MLOG("[MESH] step0 done mesh=%p", mesh);
     if (!mesh) { MLOG("[MESH] object_new failed"); return false; }
-    uo::u_call(mesh, mc.mCtor, nullptr);
+
+    if (!mc.mCtor) {
+        // Mesh 自己没有无参构造（被 strip）。不调 ctor 直接往下走，
+        // set_vertices 会因为 native 对象没建立而崩，所以提前报错。
+        MLOG("[MESH] FATAL: Mesh 无可用 .ctor，无法创建 Mesh 对象");
+        return false;
+    }
+    MLOG("[MESH] step0b Mesh..ctor...");
+    uo::u_call_void(mesh, mc.mCtor, nullptr);
+    MLOG("[MESH] step0b done");
 
     // ---- 1.5) 打印 set_vertices 的真实参数类型 ----
     // 崩在第一次灌顶点上，先确认签名是 Vector3[] 还是 Vector3[]&
