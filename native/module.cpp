@@ -32,6 +32,10 @@
 
 #include "mmd/pmx.h"
 #include "bone_hook.h"
+#include "bridge/bridge.h"
+#include "game/loader.h"
+#include <dirent.h>
+#include <strings.h>
 #include "unity/il2cpp_api.h"
 
 #define TAG "MmdRuntime"
@@ -690,21 +694,181 @@ static long long now_ms() {
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-enum Stage { ST_WAIT, ST_BIND, ST_PARSE, ST_SCAN, ST_DUMP, ST_EXP, ST_PROBE, ST_DONE };
+// =====================================================================
+// 状态机 + UI 桥接 + 模型加载
+//
+// 生命周期：
+//   WAIT → BIND → CLASSES → SCAN → IDLE ⇄ LOAD → ACTIVE
+//                                   ↑______________|
+//                    (UI 发 cmd.reapply / 重新 enable 时回到 LOAD)
+// =====================================================================
+enum Stage {
+    ST_WAIT = 0,   // 等游戏主循环起来
+    ST_BIND,       // 绑 il2cpp（每秒重试）
+    ST_CLASSES,    // 等 Unity 类表就绪（每秒重试）
+    ST_SCAN,       // 扫 SMR（每 2 秒重试）
+    ST_IDLE,       // 待命：轮询 ui.conf，等命令
+    ST_LOAD,       // 正在加载模型
+    ST_ACTIVE      // 模型已生效
+};
 
-static Stage    g_stage = ST_WAIT;
+static Stage     g_stage = ST_WAIT;
 static long long g_t0 = 0;
-static int      g_ticks = 0;
-static char     g_status[256] = "init";
+static int       g_ticks = 0;
+static char      g_status[256] = "init";
+
+static bridge::UiConfig  g_ui;         // 最近一次读到的 UI 配置
+static bool              g_hasUi = false;
+static game::LoadResult  g_load;       // 最近一次加载结果
+static mmd::Model        g_model;      // 解析出来的模型（常驻，别重复解析）
+static bool              g_modelLoaded = false;
+static int               g_lastSmrIndex = -1;
+
+// ---- 在目录里递归找 .pmx（最多 3 层） ----
+static bool find_pmx_in_dir(const char* dir, std::string& out, int depth) {
+    if (depth > 3) return false;
+    DIR* d = opendir(dir);
+    if (!d) return false;
+    struct dirent* e;
+    bool found = false;
+    while ((e = readdir(d)) != nullptr) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+        if (e->d_type == DT_DIR) {
+            if (find_pmx_in_dir(path, out, depth + 1)) { found = true; break; }
+        } else {
+            size_t n = strlen(e->d_name);
+            if (n > 4 && !strcasecmp(e->d_name + n - 4, ".pmx")) {
+                out = path;
+                found = true;
+                break;
+            }
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+// ---- UI 给的模型名 → 游戏私有目录里的 pmx 路径 ----
+static std::string find_pmx_path() {
+    const char* root = "/data/data/com.hermes.h1game/files/models";
+
+    if (g_hasUi && g_ui.activeModel[0]) {
+        char sub[1200];
+        snprintf(sub, sizeof(sub), "%s/%s", root, g_ui.activeModel);
+        std::string out;
+        if (find_pmx_in_dir(sub, out, 0)) return out;
+    }
+
+    std::string out;
+    if (find_pmx_in_dir(root, out, 0)) return out;
+
+    const char* legacy = "/data/data/com.hermes.h1game/files/nangongyu.pmx";
+    FILE* f = fopen(legacy, "rb");
+    if (f) { fclose(f); return legacy; }
+    return std::string();
+}
+
+// ---- 挑目标 SMR：优先玩家身体 ----
+static int pick_target_smr() {
+    int idx = -1;
+    for (size_t i = 0; i < g_smrs.size(); i++) {
+        if (g_smrs[i].name.find("11055_Body") != std::string::npos) { idx = (int)i; break; }
+    }
+    if (idx < 0) {
+        for (size_t i = 0; i < g_smrs.size(); i++) {
+            if (g_smrs[i].boneCount >= 40) { idx = (int)i; break; }
+        }
+    }
+    if (idx < 0 && !g_smrs.empty()) idx = 0;
+    return idx;
+}
+
+// ---- 真正加载 ----
+static bool do_load_model() {
+    std::string pmx = find_pmx_path();
+    if (pmx.empty()) {
+        snprintf(g_load.error, sizeof(g_load.error), "找不到 pmx（models 目录为空）");
+        LERR("[LOAD] %s", g_load.error);
+        return false;
+    }
+    L("[LOAD] pmx = %s", pmx.c_str());
+
+    if (!g_modelLoaded) {
+        std::string err;
+        g_model = mmd::Model{};
+        if (!mmd::Load(pmx.c_str(), g_model, err)) {
+            snprintf(g_load.error, sizeof(g_load.error), "PMX 解析失败: %s", err.c_str());
+            LERR("[LOAD] %s", g_load.error);
+            return false;
+        }
+        g_modelLoaded = true;
+        L("[LOAD] parsed verts=%zu bones=%zu mats=%zu",
+          g_model.verts.size(), g_model.bones.size(), g_model.materials.size());
+    }
+
+    if (g_smrs.empty()) {
+        snprintf(g_load.error, sizeof(g_load.error), "没有扫到 SkinnedMeshRenderer");
+        return false;
+    }
+
+    int idx = pick_target_smr();
+    if (idx < 0) {
+        snprintf(g_load.error, sizeof(g_load.error), "没有可用目标");
+        return false;
+    }
+    L("[LOAD] target SMR #%d '%s' bones=%d",
+      idx, g_smrs[(size_t)idx].name.c_str(), g_smrs[(size_t)idx].boneCount);
+
+    game::Smr smr;
+    smr.managed   = g_smrs[(size_t)idx].obj;
+    smr.native    = g_smrs[(size_t)idx].native;
+    smr.boneSlots = g_smrs[(size_t)idx].boneCount;
+
+    g_load = game::LoadResult{};
+    if (!game::load_model_into_smr(g_model, smr, nullptr, g_load)) {
+        LERR("[LOAD] 失败: %s", g_load.error);
+        return false;
+    }
+
+    g_lastSmrIndex = idx;
+    L("[LOAD] 成功: bones=%d verts=%d tris=%d meshId=%d",
+      g_load.bonesBuilt, g_load.verts, g_load.tris, g_load.meshId);
+    return true;
+}
+
+// ---- 状态回写 UI ----
+static void write_status(bool force) {
+    bridge::GameStatus st;
+    switch (g_stage) {
+        case ST_WAIT:
+        case ST_BIND:
+        case ST_CLASSES: st.gameState = "detached"; break;
+        case ST_SCAN:
+        case ST_IDLE:    st.gameState = "attached"; break;
+        case ST_LOAD:    st.gameState = "loading";  break;
+        case ST_ACTIVE:  st.gameState = "active";   break;
+        default:         st.gameState = "unknown";  break;
+    }
+    st.statusMessage   = g_status;
+    st.activeModel     = (g_hasUi && g_ui.activeModel[0]) ? g_ui.activeModel : "";
+    st.smrTotal        = (int)g_smrs.size();
+    st.smrReplaced     = g_load.ok ? 1 : 0;
+    st.boneCount       = g_load.ok ? g_load.bonesBuilt : 0;
+    st.vertexCount     = g_load.ok ? g_load.verts : 0;
+    st.replaceProgress = g_load.ok ? 1.0f : 0.0f;
+    st.lastResult      = g_load.ok ? 1 : 0;
+    st.lastError       = g_load.ok ? "" : g_load.error;
+    bridge::writeStatus(st, force);
+}
 
 extern "C" void native_tick() {
-    if (g_stage == ST_DONE) return;
     if (g_t0 == 0) { g_t0 = now_ms(); return; }
     g_ticks++;
 
     switch (g_stage) {
     case ST_WAIT:
-        // 等 4 秒，让游戏把场景铺开
         if (now_ms() - g_t0 > 4000) {
             snprintf(g_status, sizeof(g_status), "binding il2cpp");
             g_stage = ST_BIND;
@@ -712,7 +876,6 @@ extern "C" void native_tick() {
         break;
 
     case ST_BIND: {
-        // il2cpp 可能比我们晚加载，每秒重试，最多 90 次
         static int tries = 0;
         static long long lastTry = 0;
         if (now_ms() - lastTry < 1000) break;
@@ -722,19 +885,17 @@ extern "C" void native_tick() {
             L("[IL2CPP] bound after %d tries", tries);
             run_parse_test();
             snprintf(g_status, sizeof(g_status), "il2cpp bound (%d tries)", tries);
-            g_stage = ST_PARSE;
-        } else if (tries >= 90) {
-            snprintf(g_status, sizeof(g_status), "il2cpp bind failed x90");
-            g_stage = ST_DONE;
+            g_stage = ST_CLASSES;
+        } else if (tries >= 120) {
+            snprintf(g_status, sizeof(g_status), "il2cpp bind failed x120");
+            g_stage = ST_IDLE;   // 还是进 IDLE，至少 UI 能连上看到状态
         } else {
             snprintf(g_status, sizeof(g_status), "waiting il2cpp (%d)", tries);
         }
         break;
     }
 
-    case ST_PARSE: {
-        // Unity 的类表在游戏启动早期还没加载完，第一次查必然空。
-        // 跟 ST_SCAN 一样做成每秒重试，别再一脚踩死。
+    case ST_CLASSES: {
         static int tries = 0;
         static long long lastTry = 0;
         if (now_ms() - lastTry < 1000) break;
@@ -745,8 +906,8 @@ extern "C" void native_tick() {
             snprintf(g_status, sizeof(g_status), "scanning SMR");
             g_stage = ST_SCAN;
         } else if (tries >= 120) {
-            snprintf(g_status, sizeof(g_status), "unity class lookup failed x120");
-            g_stage = ST_DONE;
+            snprintf(g_status, sizeof(g_status), "unity class lookup failed");
+            g_stage = ST_IDLE;
         } else {
             snprintf(g_status, sizeof(g_status), "waiting unity classes (%d)", tries);
         }
@@ -754,7 +915,6 @@ extern "C" void native_tick() {
     }
 
     case ST_SCAN: {
-        // 场景可能还没加载完（登录界面一个 SMR 都没有），每 2 秒重试
         static int scans = 0;
         static long long lastScan = 0;
         if (now_ms() - lastScan < 2000) break;
@@ -762,37 +922,84 @@ extern "C" void native_tick() {
         scans++;
         if (scan_smrs()) {
             L("[UNITY] SMR found on scan #%d: %zu", scans, g_smrs.size());
-            snprintf(g_status, sizeof(g_status), "found %zu SMR (scan %d)", g_smrs.size(), scans);
-            g_stage = ST_DUMP;
+            dump_smrs();
+            snprintf(g_status, sizeof(g_status), "ready (%zu SMR)", g_smrs.size());
+            g_stage = ST_IDLE;
+            write_status(true);
         } else if (scans >= 300) {
             snprintf(g_status, sizeof(g_status), "no SMR after %d scans", scans);
-            g_stage = ST_DONE;
+            g_stage = ST_IDLE;
         } else {
-            snprintf(g_status, sizeof(g_status), "scanning SMR #%d (0 found)", scans);
+            snprintf(g_status, sizeof(g_status), "scanning SMR #%d", scans);
         }
         break;
     }
 
-    case ST_DUMP:
-        dump_smrs();
-        snprintf(g_status, sizeof(g_status), "dump done");
-        g_stage = ST_EXP;
-        break;
+    case ST_IDLE: {
+        // 轮询 UI
+        bridge::UiConfig cfg;
+        if (bridge::poll(cfg)) {
+            g_ui = cfg;
+            g_hasUi = true;
+        }
 
-    case ST_EXP:
-        if (!g_expDone) run_swap_experiment();
-        snprintf(g_status, sizeof(g_status), "experiment done");
-        g_stage = ST_PROBE;
-        break;
+        // 命令：重扫
+        if (g_hasUi && g_ui.cmdRescan) {
+            g_ui.cmdRescan = false;
+            g_smrs.clear();
+            snprintf(g_status, sizeof(g_status), "rescan requested");
+            g_stage = ST_SCAN;
+            break;
+        }
 
-    case ST_PROBE:
-        probe_bones_layout();
-        snprintf(g_status, sizeof(g_status), "bone layout dumped");
-        g_stage = ST_DONE;
-        break;
+        // 命令：重新套用（或者第一次打开 enable_replace）
+        bool want = g_hasUi && g_ui.enableReplace;
+        bool need = g_hasUi && (g_ui.cmdReapply || (want && !g_load.ok));
+        if (need) {
+            g_ui.cmdReapply = false;
+            g_stage = ST_LOAD;
+            break;
+        }
 
-    default:
+        write_status(false);
         break;
+    }
+
+    case ST_LOAD: {
+        snprintf(g_status, sizeof(g_status), "loading model");
+        write_status(true);
+        bool ok = do_load_model();
+        if (ok) {
+            snprintf(g_status, sizeof(g_status), "model active: %s",
+                     g_hasUi && g_ui.activeModel[0] ? g_ui.activeModel : "?");
+            g_stage = ST_ACTIVE;
+        } else {
+            snprintf(g_status, sizeof(g_status), "load failed: %s", g_load.error);
+            g_stage = ST_IDLE;
+            g_modelLoaded = false;   // 允许下次重新解析
+        }
+        write_status(true);
+        break;
+    }
+
+    case ST_ACTIVE: {
+        // 保持状态回报；UI 关掉总开关时回到 IDLE（暂不还原模型）
+        bridge::UiConfig cfg;
+        if (bridge::poll(cfg)) {
+            g_ui = cfg;
+            g_hasUi = true;
+        }
+        if (g_hasUi && !g_ui.enableReplace) {
+            snprintf(g_status, sizeof(g_status), "disabled by ui");
+            g_stage = ST_IDLE;
+        } else if (g_hasUi && (g_ui.cmdReapply || g_ui.cmdRescan)) {
+            g_ui.cmdReapply = false;
+            g_ui.cmdRescan = false;
+            g_stage = ST_LOAD;
+        }
+        write_status(false);
+        break;
+    }
     }
 }
 
@@ -827,7 +1034,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_moss_mmdruntime_HookEntry_nativeBind(JNIEnv*, jclass, jclass) {}
 extern "C" JNIEXPORT void JNICALL
 Java_com_moss_mmdruntime_HookEntry_nativeReset(JNIEnv*, jclass) {
-    g_stage = ST_PARSE;
+    g_stage = ST_SCAN;
     g_expDone = false;
     g_smrs.clear();
 }

@@ -4,14 +4,25 @@ project(mmdruntime CXX)
 # ---------------------------------------------------------------------
 # 游戏侧 so（注入 com.hermes.h1game 进程）
 #
-# 职责：PMX 解析、il2cpp 绑定、SMR 劫持（含 m_Bones 扩容 hook）。
+# 分层：
+#   mmd/    PMX 解析、骨骼树、Mesh 构建        —— 不依赖游戏
+#   unity/  GameObject/Transform/Mesh 封装     —— 只依赖 il2cpp + Unity API
+#   game/   SMR 写入、总装流程                 —— 依赖具体游戏
+#   bone_hook.cpp  m_Bones 容器析构拦截        —— 扩容的析构保护
+#
 # 不含任何 UI —— UI 在 App 自己的悬浮窗里（libimgui_overlay.so）。
 # ---------------------------------------------------------------------
 
 add_library(mmdruntime SHARED
     module.cpp
-    mmd/pmx.cpp
     bone_hook.cpp
+    mmd/pmx.cpp
+    mmd/skeleton.cpp
+    mmd/mesh_builder.cpp
+    bridge/bridge.cpp
+    unity/unity_objects.cpp
+    game/smr_bind.cpp
+    game/loader.cpp
 )
 
 target_include_directories(mmdruntime PRIVATE

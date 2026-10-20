@@ -1,0 +1,124 @@
+// =====================================================================
+// skeleton.cpp
+//
+// 建树分三遍，顺序不能乱：
+//   ① 全部 new 出来（不带父级、不设位置）
+//   ② 按 parent 索引 set_parent，再设 localPosition
+//      顺序反了会被 SetParent 的 worldPositionStays 把位置算飞
+//   ③ 记录每根骨骼 Transform 的 instanceID（后面写 m_Bones 用）
+// =====================================================================
+#include "skeleton.h"
+
+#include <android/log.h>
+#include <cmath>
+#include <cstring>
+
+#include "unity/unity_objects.h"
+
+#define STAG "MmdSkeleton"
+#define SLOG(...) __android_log_print(ANDROID_LOG_INFO, STAG, __VA_ARGS__)
+
+namespace mmd {
+
+namespace {
+const int kMaxDepthGuard = 64;   // 防循环引用
+}
+
+bool Skeleton::build(const Model& model, void* rootParent) {
+    const int n = (int)model.bones.size();
+    if (n <= 0) {
+        SLOG("[SKEL] no bones");
+        return false;
+    }
+    if (!uo::ready() && !uo::init()) {
+        SLOG("[SKEL] unity objects not ready");
+        return false;
+    }
+
+    nodes_.clear();
+    nodes_.resize((size_t)n);
+    built_ = roots_ = maxDepth_ = 0;
+
+    // ---- ① 全部建出来 ----
+    for (int i = 0; i < n; i++) {
+        const Bone& b = model.bones[(size_t)i];
+        BoneNode& node = nodes_[(size_t)i];
+        node.pmxIndex = i;
+        node.parentPmx = b.parent;
+        node.worldPos[0] = b.pos[0];
+        node.worldPos[1] = b.pos[1];
+        node.worldPos[2] = b.pos[2];
+        node.transform = uo::create_node(b.name.empty() ? "bone" : b.name.c_str(),
+                                         nullptr, 0.0f, 0.0f, 0.0f);
+        node.ok = (node.transform != nullptr);
+        if (node.ok) built_++;
+    }
+
+    if (built_ == 0) {
+        SLOG("[SKEL] no transform created");
+        return false;
+    }
+
+    // ---- ② 挂父级 + 设局部位置 ----
+    for (int i = 0; i < n; i++) {
+        BoneNode& node = nodes_[(size_t)i];
+        if (!node.ok) continue;
+
+        int p = node.parentPmx;
+        void* parentTr = rootParent;
+        float px = 0.0f, py = 0.0f, pz = 0.0f;
+
+        if (p >= 0 && p < n && nodes_[(size_t)p].ok) {
+            parentTr = nodes_[(size_t)p].transform;
+            px = nodes_[(size_t)p].worldPos[0];
+            py = nodes_[(size_t)p].worldPos[1];
+            pz = nodes_[(size_t)p].worldPos[2];
+        } else {
+            roots_++;
+        }
+
+        if (parentTr) {
+            uo::set_parent(node.transform, parentTr);
+        }
+
+        // PMX 存的是模型空间绝对坐标，localPosition 必须减父级绝对值
+        uo::set_local_position(node.transform,
+                               node.worldPos[0] - px,
+                               node.worldPos[1] - py,
+                               node.worldPos[2] - pz);
+    }
+
+    // ---- ③ instanceID ----
+    for (int i = 0; i < n; i++) {
+        BoneNode& node = nodes_[(size_t)i];
+        if (!node.ok) continue;
+        node.instanceId = uo::instance_id(node.transform);
+    }
+
+    // ---- 统计层级深度（顺带查出环） ----
+    for (int i = 0; i < n; i++) {
+        if (!nodes_[(size_t)i].ok) continue;
+        int depth = 0;
+        int cur = i;
+        while (cur >= 0 && cur < n && depth < kMaxDepthGuard) {
+            cur = nodes_[(size_t)cur].parentPmx;
+            depth++;
+        }
+        if (depth > maxDepth_) maxDepth_ = depth;
+    }
+
+    int idOk = 0;
+    for (int i = 0; i < n; i++) if (nodes_[(size_t)i].ok && nodes_[(size_t)i].instanceId != 0) idOk++;
+
+    SLOG("[SKEL] built=%d/%d roots=%d maxDepth=%d instanceIds=%d",
+         built_, n, roots_, maxDepth_, idOk);
+    return built_ == n;
+}
+
+void Skeleton::destroy() {
+    // 只清引用，GameObject 交给 Unity 场景管理（我们没法安全 Destroy）
+    nodes_.clear();
+    built_ = roots_ = maxDepth_ = 0;
+}
+
+}  // namespace mmd
