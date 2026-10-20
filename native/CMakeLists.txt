@@ -26,6 +26,7 @@ add_library(mmdruntime SHARED
     unity/unity_objects.cpp
     game/smr_bind.cpp
     game/loader.cpp
+    game/camera_ctrl.cpp
 )
 
 target_include_directories(mmdruntime PRIVATE

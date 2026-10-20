@@ -94,6 +94,15 @@ typedef struct MmdApi {
     const char* (*active_model)(void);
     // 把 PMX 重新解析一遍（换模型/改了文件用），下次 load 时生效
     void (*cmd_reparse)(void);
+
+    // 自由视角摄像机
+    int  (*camera_enable)(int on);    // 返回 1 = 已开启
+    int  (*camera_is_enabled)(void);
+    void (*camera_reset)(void);
+    // 喂触摸。返回 1 = 这个触摸归摄像机，别给游戏
+    int  (*camera_touch)(int action, int pointerId, float x, float y, float vw, float vh);
+    // 拉近拉远（滑条用，单位世界单位）
+    void (*camera_zoom)(float d);
 } MmdApi;
 
 // 唯一导出符号

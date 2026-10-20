@@ -35,6 +35,7 @@
 #include <string>
 #include <vector>
 
+#include "game/camera_ctrl.h"
 #include "mmd/pmx.h"
 #include "bone_hook.h"
 #include "logsink.h"
@@ -1149,6 +1150,9 @@ extern "C" void native_tick() {
     }
     }
 
+    // 摄像机：放在状态机之后，保证是渲染前最后一写
+    if (game::g_camera.enabled) game::g_camera.update();
+
     refresh_status();   // 状态快照每帧刷一次，UI 侧随时能读
 }
 
@@ -1397,6 +1401,28 @@ static const char* api_active_model() {
 }
 
 static void api_cmd_reparse() {
+static int api_camera_enable(int on) {
+    game::camera_set_enabled(on);
+    L("[API] camera_enable(%d) -> %d", on, game::camera_is_enabled());
+    return game::camera_is_enabled();
+}
+
+static int api_camera_is_enabled() {
+    return game::camera_is_enabled();
+}
+
+static void api_camera_reset() {
+    game::g_camera.reset();
+    L("[API] camera_reset");
+}
+
+static int api_camera_touch(int action, int pointerId, float x, float y, float vw, float vh) {
+    return game::camera_touch(action, pointerId, x, y, vw, vh) ? 1 : 0;
+}
+
+static void api_camera_zoom(float d) {
+    game::g_camera.zoom(d);
+}
     pthread_mutex_lock(&g_cfgMtx);
     g_ui.cmdReapply = 1;
     g_hasUi = true;
@@ -1424,6 +1450,11 @@ const MmdApi* mmd_get_api(void) {
         api_list_models,
         api_active_model,
         api_cmd_reparse,
+        api_camera_enable,
+        api_camera_is_enabled,
+        api_camera_reset,
+        api_camera_touch,
+        api_camera_zoom,
     };
     static bool announced = false;
     if (!announced) {

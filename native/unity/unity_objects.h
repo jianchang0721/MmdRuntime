@@ -43,9 +43,15 @@ const char* object_name(void* obj);      // Object.get_name()（返回静态缓�
 // 免得在 namespace uo 里造出 uo::Il2CppClass 跟全局的打架
 void* u_class(const char* ns, const char* name);            // 找类
 void* u_method(void* klass, const char* name, int paramCount); // 找方法（按参数个数筛重载）
+
+// 按「名字 + 参数个数 + 第一个参数类名」筛重载。
+// Unity 的 .ctor / set_position / SetColor 之类重载极多，只按个数筛会撞错，
+// 而撞错的表现是 runtime_invoke 不抛异常、安安静静返回 nullptr。
+void* u_method_typed(void* klass, const char* name, int paramCount, const char* p0Class);
 void* u_call(void* obj, void* method, void** args);        // runtime_invoke，返回 Il2CppObject*
 void* u_new_array(void* elemClass, size_t count);          // il2cpp_array_new
 void* u_array_data(void* arr);                             // 数组元素起始地址（跳过 32 字节头）
+void* u_array_data_from(void* arr, size_t idx);            // 第 idx 个元素的地址
 void* u_new_object(void* klass);                           // il2cpp_object_new
 
 // ---- 诊断 ----

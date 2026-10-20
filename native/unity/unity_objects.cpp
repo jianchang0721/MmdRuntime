@@ -303,4 +303,13 @@ void* u_new_object(void* klass) {
 
 int created_nodes() { return g_created; }
 
+
+void* u_method_typed(void* klass, const char* name, int paramCount, const char* p0Class) {
+    return (void*)find_method_typed((Il2CppClass*)klass, name, paramCount, p0Class);
+}
+
+void* u_array_data_from(void* arr, size_t idx) {
+    if (!arr) return nullptr;
+    return (char*)arr + 32 + sizeof(void*) * idx;
+}
 }  // namespace uo
