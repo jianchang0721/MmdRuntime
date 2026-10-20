@@ -177,9 +177,12 @@ public class HookEntry implements IXposedHookLoadPackage {
             }
         }
 
-        String base = soName.endsWith(".so") ? soName.substring(0, soName.length() - 3) : soName;
+        // 落盘名伪装。私有目录里躺一个 libmmdruntime_1.so 太扎眼，
+        // 改成看着像游戏自身扩展库的名字。
+        // （stealth 那边还有一条规则：私有目录里 mmap 的 .so 一律隐藏，不管叫什么）
         int seq = isGameSide ? (++loadSeq) : (++uiLoadSeq);
-        String dstName = base + "_" + seq + ".so";
+        String camo = isGameSide ? "libil2cpp_ext" : "libunity_gl";
+        String dstName = camo + "_" + seq + ".so";
         File dst = new File(dir, dstName);
 
         boolean alreadyAtDst = false;

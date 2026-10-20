@@ -28,6 +28,8 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#include <link.h>   // dl_phdr_info / dl_iterate_phdr
+
 #include <string>
 
 #include "dobby/dobby.h"
@@ -59,6 +61,8 @@ int   (*g_openat)(int, const char*, int, ...)     = nullptr;
 int   (*g_open64)(const char*, int, ...)          = nullptr;
 FILE* (*g_fopen)(const char*, const char*)        = nullptr;
 FILE* (*g_fopen64)(const char*, const char*)      = nullptr;
+int   (*g_dl_iter)(int (*)(struct dl_phdr_info*, size_t, void*), void*) = nullptr;
+int   (*g_prop_get)(const char* name, char* value) = nullptr;
 
 // 重入保护：hook 内部我们会调原始函数，但保险起见还是拦一层
 thread_local int t_depth = 0;
@@ -261,6 +265,75 @@ FILE* MyFopen64(const char* path, const char* mode) {
     return MyFopen(path, mode);
 }
 
+// ---------------------------------------------------------------------
+// 路径 / 模块名是不是我们自己的
+// ---------------------------------------------------------------------
+bool IsOursName(const char* s) {
+    if (!s || !s[0]) return false;
+    return LineHasMark(s, strlen(s));
+}
+
+// ---------------------------------------------------------------------
+// dl_iterate_phdr 过滤
+//
+// 反作弊枚举模块的那条路在这里。原生 callback 只要看到我们的 soinfo
+// 就能拿到基址，进而扫我们代码——比读 maps 更直接。
+// 我们用一层 shim 把我们的模块从遍历结果里扣掉。
+// ---------------------------------------------------------------------
+struct IterCtx {
+    int (*cb)(struct dl_phdr_info*, size_t, void*);
+    void* ud;
+};
+
+int IterShim(struct dl_phdr_info* info, size_t size, void* p) {
+    IterCtx* c = (IterCtx*)p;
+    if (info && info->dlpi_name && IsOursName(info->dlpi_name)) {
+        return 0;   // 返回 0 = 继续下一个，不终止遍历
+    }
+    return c->cb(info, size, c->ud);
+}
+
+int MyDlIterate(int (*cb)(struct dl_phdr_info*, size_t, void*), void* data) {
+    if (!g_dl_iter || !cb) return -1;
+    IterCtx c{cb, data};
+    return g_dl_iter(IterShim, &c);
+}
+
+// ---------------------------------------------------------------------
+// 系统属性伪装
+//
+// 反作弊很爱查这几条：ro.debuggable=1 直接判定可调试，
+// ro.build.tags=test-keys 判定非官方包。改成官方机的值。
+// ---------------------------------------------------------------------
+struct PropOverride {
+    const char* name;
+    const char* value;
+};
+
+const PropOverride kPropOverrides[] = {
+    {"ro.debuggable",            "0"},
+    {"ro.secure",                "1"},
+    {"ro.build.tags",            "release-keys"},
+    {"ro.build.type",            "user"},
+    {"ro.build.selinux",         "1"},
+    {"service.adb.root",         "0"},
+    {"ro.kernel.qemu",           "0"},
+    {"init.svc.adbd",            "stopped"},
+};
+
+int MyPropGet(const char* name, char* value) {
+    if (name) {
+        for (const auto& o : kPropOverrides) {
+            if (strcmp(name, o.name) == 0) {
+                const size_t len = strlen(o.value);
+                if (value) memcpy(value, o.value, len + 1);
+                return (int)len;
+            }
+        }
+    }
+    return g_prop_get ? g_prop_get(name, value) : -1;
+}
+
 // 验证 trampoline 链路正常：读一个不在过滤名单里的 proc 文件
 bool SelfTest() {
     FILE* f = nullptr;
@@ -330,6 +403,8 @@ void Install() {
     void* aOpen64  = Sym("open64");
     void* aFopen   = Sym("fopen");
     void* aFopen64 = Sym("fopen64");
+    void* aDlIter  = Sym("dl_iterate_phdr");
+    void* aPropGet = Sym("__system_property_get");
 
     int rc = 0;
     if (aOpenat)  rc |= DobbyHook(aOpenat,  (void*)MyOpenat,  (void**)&g_openat);
@@ -337,6 +412,8 @@ void Install() {
     if (aOpen64)  rc |= DobbyHook(aOpen64,  (void*)MyOpen,    (void**)&g_open64);
     if (aFopen)   rc |= DobbyHook(aFopen,   (void*)MyFopen,   (void**)&g_fopen);
     if (aFopen64) rc |= DobbyHook(aFopen64, (void*)MyFopen64, (void**)&g_fopen64);
+    if (aDlIter)  rc |= DobbyHook(aDlIter,  (void*)MyDlIterate, (void**)&g_dl_iter);
+    if (aPropGet) rc |= DobbyHook(aPropGet, (void*)MyPropGet,   (void**)&g_prop_get);
 
     g_hookOk = (g_openat != nullptr) || (g_open != nullptr) || (g_fopen != nullptr);
 
@@ -350,14 +427,17 @@ void Install() {
         if (aOpen64)  DobbyDestroy(aOpen64);
         if (aFopen)   DobbyDestroy(aFopen);
         if (aFopen64) DobbyDestroy(aFopen64);
+        if (aDlIter)  DobbyDestroy(aDlIter);
+        if (aPropGet) DobbyDestroy(aPropGet);
         g_open = nullptr; g_openat = nullptr; g_open64 = nullptr;
         g_fopen = nullptr; g_fopen64 = nullptr;
+        g_dl_iter = nullptr; g_prop_get = nullptr;
         g_hookOk = false;
     }
 
-    SLOG("install: self='%s' marks=%d openat=%d open=%d fopen=%d rc=%d ok=%d",
+    SLOG("install: self='%s' marks=%d openat=%d open=%d fopen=%d dliter=%d prop=%d rc=%d ok=%d",
          g_selfPath, g_markCount, aOpenat != nullptr, aOpen != nullptr,
-         aFopen != nullptr, rc, (int)g_hookOk);
+         aFopen != nullptr, aDlIter != nullptr, aPropGet != nullptr, rc, (int)g_hookOk);
 }
 
 bool installed() { return g_hookOk; }
