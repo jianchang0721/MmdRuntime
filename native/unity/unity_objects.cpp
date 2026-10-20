@@ -35,6 +35,7 @@ const MethodInfo* g_mGetInstanceID = nullptr;  // Object::GetInstanceID
 const MethodInfo* g_mGetName       = nullptr;  // Object::get_name
 
 int g_created = 0;
+std::string g_lastException;   // 最近一次 il2cpp 异常的类名，诊断用
 bool g_ready = false;
 
 // 静态缓冲，给名字用（别长期持有）
@@ -78,9 +79,13 @@ Il2CppObject* invoke(const MethodInfo* m, void* obj, void** args) {
     Il2CppException* exc = nullptr;
     Il2CppObject* r = g_api.runtime_invoke(m, obj, args, &exc);
     if (exc) {
+        // 异常不清掉的话 il2cpp 的异常状态会一直挂着，
+        // 下一次 runtime_invoke 直接走异常路径，表现就是整个加载链静默死掉。
         void* cl = *(void**)exc;
         const char* n = cl && g_api.class_get_name ? g_api.class_get_name((Il2CppClass*)cl) : "?";
-        ULOG("[UNITYOBJ] invoke threw %s", n ? n : "?");
+        ULOG("[UNITYOBJ] invoke threw %s (method=%p obj=%p)",
+             n ? n : "?", (void*)m, obj);
+        g_lastException = n ? n : "?";
         return nullptr;
     }
     return r;
@@ -135,16 +140,29 @@ void* create_node(const char* name, void* parentTransform, float lx, float ly, f
     if (!g_ready) return nullptr;
 
     // 1) new GameObject
+    //
+    // il2cpp_object_new 只分配内存、填 klass/monitor，**不跑构造函数**。
+    // GameObject 的 .ctor 里要做 native 侧注册（拿 m_CachedPtr），
+    // 不跑的话这是个半成品：下一帧 Unity 遍历场景对象时踩到它就炸。
+    //
+    // 2026-10-20 实测：224 个半成品 GameObject 让游戏在加载到 50% 时
+    // 整个进程消失，且不留 tombstone（走的是 Unity 自己的异常终止路径）。
     Il2CppObject* go = g_api.object_new ? g_api.object_new(g_goClass) : nullptr;
     if (!go) { ULOG("[UNITYOBJ] object_new failed"); return nullptr; }
 
     Il2CppString* s = g_api.string_new ? g_api.string_new(name ? name : "mmd") : nullptr;
-    void* args[1] = { s };
-    invoke(g_mGoCtorString, go, args);
+    void* args[1] = { &s };
+    Il2CppObject* ctorRet = invoke(g_mGoCtorString, go, args);
+    if (!ctorRet) {
+        ULOG("[UNITYOBJ] GameObject..ctor 抛异常或失败: %s (last=%s)",
+             name ? name : "?", g_lastException.c_str());
+        return nullptr;
+    }
+    ULOG("[UNITYOBJ] GameObject ok: %s -> %p", name ? name : "?", go);
 
     // 2) 取 Transform
     Il2CppObject* tr = invoke(g_mGetTransform, go, nullptr);
-    if (!tr) { ULOG("[UNITYOBJ] get_transform failed"); return nullptr; }
+    if (!tr) { ULOG("[UNITYOBJ] get_transform failed (go=%p)", go); return nullptr; }
 
     // 3) 挂父级
     if (parentTransform) {
