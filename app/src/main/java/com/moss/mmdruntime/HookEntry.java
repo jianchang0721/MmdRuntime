@@ -60,20 +60,27 @@ public class HookEntry implements IXposedHookLoadPackage {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     final Activity a = (Activity) param.thisObject;
-                    try {
-                        FloatPanel.Theme t = new FloatPanel.Theme();
-                        t.title = "MmdRuntime";
-                        t.accent = 0xFF7C4DFF;
-                        t.accentDim = 0x667C4DFF;
-                        t.textMain = 0xFFD8CCFF;
-                        t.textSub = 0xFF7FD4FF;
-                        t.btnText = 0xFFE0B9FF;
-                        final FloatPanel panel = FloatPanel.get(a, t);
-                        panels.put(a, panel);
+                    // 基类 onCreate 钩子上 thisObject 可能是 null，或者窗口还没 attach。
+                    // 这种情况直接跳过，等下一个 Activity。
+                    if (a == null) return;
+                    try { if (a.getWindow() == null) return; } catch (Throwable ignored) { return; }
 
-                        if (loadSeq == 0) {
-                            lastStatus = doLoad();
-                        }
+                    // so 加载不依赖 UI，放最前面。UI 崩了功能照常。
+                    if (loadSeq == 0 && isMainProcess()) {
+                        lastStatus = doLoad();
+                    }
+
+                    // 悬浮窗尽力而为
+                    try {
+                        FloatPanel.Theme th = new FloatPanel.Theme();
+                        th.title = "MmdRuntime";
+                        th.accent = 0xFF7C4DFF;
+                        th.accentDim = 0x667C4DFF;
+                        th.textMain = 0xFFD8CCFF;
+                        th.textSub = 0xFF7FD4FF;
+                        th.btnText = 0xFFE0B9FF;
+                        final FloatPanel panel = FloatPanel.get(a, th);
+                        panels.put(a, panel);
                         panel.setLog(lastStatus);
 
                         if (panels.size() <= 1) {   // 只在第一个 Activity 上装按钮
@@ -104,6 +111,19 @@ public class HookEntry implements IXposedHookLoadPackage {
     }
 
     // ---------------- so 加载 ----------------
+
+    /** 子进程（:push / :lebian.base 等）不加载 so，避免多份心跳线程。 */
+    static boolean isMainProcess() {
+        try {
+            java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.FileReader("/proc/self/cmdline"));
+            String s = r.readLine();
+            r.close();
+            return s != null && !s.contains(":");
+        } catch (Throwable t) {
+            return true;
+        }
+    }
 
     static synchronized String doLoad() {
         File src = null;

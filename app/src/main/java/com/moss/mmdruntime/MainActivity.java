@@ -80,9 +80,16 @@ public class MainActivity extends Activity {
         });
         root.addView(listBtn, lp(-1, -2, 0, 0, 0, dp(16)));
 
+        Button authBtn = mkButton("检查 root 授权");
+        authBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { checkRoot(); }
+        });
+        root.addView(authBtn, lp(-1, -2, 0, 0, 0, dp(10)));
+
         TextView tip = new TextView(this);
-        tip.setText("模型文件夹里放 .pmx 和它的贴图（保持原来相对路径）\n"
-                  + "导入后进游戏自动生效，悬浮窗里能看到状态");
+        tip.setText("第一次导入或检查授权时，KernelSU 会弹窗询问是否给 MmdRuntime root 权限 —— 点允许。"
+                  + "如果没弹窗，打开 KernelSU 管理器 → 应用列表 → MmdRuntime → 允许。\n"
+                  + "模型文件夹里放 .pmx 和它的贴图（保持原来相对路径），导入后进游戏自动生效。");
         tip.setTextColor(0xFF667088);
         tip.setTextSize(11);
         root.addView(tip, lp(-1, -2, 0, 0, 0, dp(16)));
@@ -310,6 +317,30 @@ public class MainActivity extends Activity {
         while ((line = er.readLine()) != null) sb.append("[err] ").append(line).append('\n');
         p.waitFor();
         return sb.toString();
+    }
+
+    // ---------------- root 授权 ----------------
+
+    void checkRoot() {
+        log("------ root 授权检查 ------");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    String out = su("id -u; which su");
+                    if (out.contains("uid=0")) {
+                        ui("✓ 已有 root，KSU 已授权本应用");
+                    } else {
+                        ui("su 执行了但不是 root: " + out.trim());
+                        ui("去 KernelSU 管理器 → MmdRuntime → 允许");
+                    }
+                } catch (Throwable t) {
+                    ui("✗ su 不可用: " + t.getClass().getSimpleName());
+                    ui("说明 KSU 还没授权（或没装 KSU）。");
+                    ui("打开 KernelSU 管理器 → 应用列表 → MmdRuntime → 开 root。");
+                    ui("然后再点「检查 root 授权」。");
+                }
+            }
+        }).start();
     }
 
     // ---------------- 已导入列表 ----------------
