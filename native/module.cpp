@@ -519,6 +519,60 @@ static void run_swap_experiment() {
 }
 
 // =====================================================================
+// 阶段 4：m_Bones 扩容探测（1B / hook 路线前置）
+//
+// 已知：m_Bones 起始 +0x1e0，data 指针 @+0x00（int32 instanceID 数组），
+//       size @+0x10（get_bones 里 `ldrsw x2, [x21, #0x10]` 读的就是它）。
+// 未知：capacity 字段在哪。本次只做只读 dump，一个字节都不写。
+// =====================================================================
+static void probe_bones_layout() {
+    int idx = -1;
+    for (size_t i = 0; i < g_smrs.size(); i++) {
+        if (g_smrs[i].name.find("11055_Body") != std::string::npos) { idx = (int)i; break; }
+    }
+    if (idx < 0) {
+        for (size_t i = 0; i < g_smrs.size(); i++) {
+            if (g_smrs[i].boneCount > 40) { idx = (int)i; break; }
+        }
+    }
+    if (idx < 0) { LERR("[BONE] no suitable SMR found"); return; }
+
+    SmrInfo& s = g_smrs[idx];
+    uint8_t* base = (uint8_t*)s.native;
+    if (!base) { LERR("[BONE] native null"); return; }
+
+    L("========== [BONE] LAYOUT DUMP ==========");
+    L("[BONE] target='%s' native=%p getbones=%d", s.name.c_str(), s.native, s.boneCount);
+
+    void*  dataPtr = *(void**)(base + 0x1e0);
+    int32_t sizeVal = *(int32_t*)(base + 0x1f0);
+    L("[BONE] data=%p  size@0x1f0=%d", dataPtr, sizeVal);
+
+    // 把 0x1d0 ~ 0x220 全部打出来，人工对着找 capacity
+    for (int off = 0x1d0; off <= 0x220; off += 16) {
+        uint64_t a = *(uint64_t*)(base + off);
+        uint64_t b = *(uint64_t*)(base + off + 8);
+        L("[BONE] +0x%03x  %016llx  %016llx", off,
+          (unsigned long long)a, (unsigned long long)b);
+    }
+
+    // data 前 8 个 instanceID，确认数组内容可读
+    if (dataPtr) {
+        int32_t* ids = (int32_t*)dataPtr;
+        L("[BONE] data[0..7] = %d %d %d %d %d %d %d %d",
+          ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[6], ids[7]);
+    }
+
+    // 猜 capacity：size 后面 4/8 字节上的小整数
+    int32_t c1 = *(int32_t*)(base + 0x1f4);
+    int32_t c2 = *(int32_t*)(base + 0x1f8);
+    int32_t c3 = *(int32_t*)(base + 0x1e8);
+    L("[BONE] capacity candidates: +0x1f4=%d  +0x1f8=%d  +0x1e8=%d", c1, c2, c3);
+    L("[BONE] verdict: need >= 224. %s", (c1 >= 224 || c2 >= 224) ? "SOME-CANDIDATE-OK" : "ALL-TOO-SMALL");
+    L("========== [BONE] LAYOUT DUMP END ==========");
+}
+
+// =====================================================================
 // tick 状态机
 // =====================================================================
 static long long now_ms() {
@@ -527,7 +581,7 @@ static long long now_ms() {
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-enum Stage { ST_WAIT, ST_BIND, ST_PARSE, ST_SCAN, ST_DUMP, ST_EXP, ST_DONE };
+enum Stage { ST_WAIT, ST_BIND, ST_PARSE, ST_SCAN, ST_DUMP, ST_EXP, ST_PROBE, ST_DONE };
 
 static Stage    g_stage = ST_WAIT;
 static long long g_t0 = 0;
@@ -608,6 +662,12 @@ extern "C" void native_tick() {
     case ST_EXP:
         if (!g_expDone) run_swap_experiment();
         snprintf(g_status, sizeof(g_status), "experiment done");
+        g_stage = ST_PROBE;
+        break;
+
+    case ST_PROBE:
+        probe_bones_layout();
+        snprintf(g_status, sizeof(g_status), "bone layout dumped");
         g_stage = ST_DONE;
         break;
 
