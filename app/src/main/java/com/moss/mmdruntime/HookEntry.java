@@ -1,15 +1,10 @@
 package com.moss.mmdruntime;
 
 import android.app.Activity;
-import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Process;
-import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
-import android.widget.FrameLayout;
-import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import java.io.File;
@@ -51,8 +46,7 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     static int loadSeq = 0;
     static String lastStatus = "尚未加载";
-    static final WeakHashMap<Activity, LinearLayout> overlays = new WeakHashMap<>();
-    static TextView statusView = null;
+    static final WeakHashMap<Activity, FloatPanel> panels = new WeakHashMap<>();
     static Handler tickHandler = null;
     static int tickCount = 0;
 
@@ -67,10 +61,37 @@ public class HookEntry implements IXposedHookLoadPackage {
                 protected void afterHookedMethod(MethodHookParam param) {
                     final Activity a = (Activity) param.thisObject;
                     try {
-                        installOverlay(a);
+                        FloatPanel.Theme t = new FloatPanel.Theme();
+                        t.title = "MmdRuntime";
+                        t.accent = 0xFF7C4DFF;
+                        t.accentDim = 0x667C4DFF;
+                        t.textMain = 0xFFD8CCFF;
+                        t.textSub = 0xFF7FD4FF;
+                        t.btnText = 0xFFE0B9FF;
+                        final FloatPanel panel = FloatPanel.get(a, t);
+                        panels.put(a, panel);
+
                         if (loadSeq == 0) {
                             lastStatus = doLoad();
-                            refreshStatus();
+                        }
+                        panel.setLog(lastStatus);
+
+                        if (panels.size() <= 1) {   // 只在第一个 Activity 上装按钮
+                            panel.clearButtons();
+                            TextView btn = panel.addButton("重载 so");
+                            btn.setOnClickListener(new View.OnClickListener() {
+                                @Override public void onClick(View v) {
+                                    lastStatus = doLoad();
+                                    panel.setLog(lastStatus);
+                                }
+                            });
+                            TextView st = panel.addButton("状态");
+                            st.setOnClickListener(new View.OnClickListener() {
+                                @Override public void onClick(View v) {
+                                    try { lastStatus = nativeStatus(); } catch (Throwable ignored) { }
+                                    panel.setLog(lastStatus);
+                                }
+                            });
                         }
                     } catch (Throwable t) {
                         XposedBridge.log(TAG + ": overlay fail " + t);
@@ -140,88 +161,9 @@ public class HookEntry implements IXposedHookLoadPackage {
         });
     }
 
-    // ---------------- 悬浮窗 ----------------
-
-    static void installOverlay(final Activity a) {
-        if (overlays.containsKey(a)) return;
-
-        LinearLayout root = new LinearLayout(a);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(14, 10, 14, 10);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(0xE6121219);
-        bg.setCornerRadius(16f);
-        bg.setStroke(2, 0x667C4DFF);
-        root.setBackground(bg);
-
-        TextView title = new TextView(a);
-        title.setText("MmdRuntime");
-        title.setTextColor(0xFFB388FF);
-        title.setTextSize(12);
-        root.addView(title);
-
-        final TextView status = new TextView(a);
-        status.setTextColor(0xFF7FD4FF);
-        status.setTextSize(10);
-        status.setText(lastStatus);
-        status.setPadding(0, 4, 0, 6);
-        root.addView(status);
-        statusView = status;
-
-        TextView btn = mkBtn(a, "重载 so");
-        btn.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                lastStatus = doLoad();
-                refreshStatus();
-            }
-        });
-        root.addView(btn);
-
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.leftMargin = 36;
-        lp.topMargin = 300;
-
-        ViewGroup decor = null;
-        try { decor = (ViewGroup) a.getWindow().getDecorView(); } catch (Throwable ignored) { }
-        if (decor != null) decor.addView(root, lp);
-        else a.addContentView(root, lp);
-
-        // 沿父链关掉裁剪，避免拖出边界就看不见
-        try {
-            android.view.ViewParent p = root.getParent();
-            int d = 0;
-            while (p instanceof ViewGroup && d++ < 10) {
-                ((ViewGroup) p).setClipChildren(false);
-                ((ViewGroup) p).setClipToPadding(false);
-                p = p.getParent();
-            }
-        } catch (Throwable ignored) { }
-
-        overlays.put(a, root);
-    }
+    // ---------------- 悬浮窗（FloatPanel 接管 UI） ----------------
 
     static void refreshStatus() {
-        if (statusView == null) return;
-        statusView.post(new Runnable() {
-            @Override public void run() {
-                try { statusView.setText(lastStatus); } catch (Throwable ignored) { }
-            }
-        });
-    }
-
-    static TextView mkBtn(Activity a, String text) {
-        TextView tv = new TextView(a);
-        tv.setText(text);
-        tv.setTextColor(0xFFB388FF);
-        tv.setTextSize(12);
-        tv.setGravity(Gravity.CENTER);
-        tv.setPadding(18, 14, 18, 14);
-        GradientDrawable b = new GradientDrawable();
-        b.setColor(0x337C4DFF);
-        b.setCornerRadius(12f);
-        b.setStroke(1, 0xAA7C4DFF);
-        tv.setBackground(b);
-        return tv;
+        for (FloatPanel p : panels.values()) p.setLog(lastStatus);
     }
 }
