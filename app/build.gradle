@@ -1,0 +1,40 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.moss.mmdruntime'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.moss.mmdruntime"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "0.1"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    signingConfigs {
+        release {
+            storeFile file("../keystore/mmdruntime.jks")
+            storePassword "modelmod123"
+            keyAlias "modelmod"
+            keyPassword "modelmod123"
+            storeType "jks"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+}
+
+dependencies {
+    compileOnly project(':stubs')
+}
