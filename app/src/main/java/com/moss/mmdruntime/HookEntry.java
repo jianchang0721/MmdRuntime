@@ -70,7 +70,15 @@ public class HookEntry implements IXposedHookLoadPackage {
                         lastStatus = doLoad();
                     }
 
-                    // 悬浮窗尽力而为
+                    // 悬浮窗尽力而为：推迟到 onCreate 完全返回之后，
+                    // 有些游戏 Activity 在 super.onCreate() 阶段 getResources() 还没初始化好
+                    final Activity af = a;
+                    new Handler(Looper.getMainLooper()).post(new Runnable() {
+                        @Override public void run() { installPanel(af); }
+                    });
+                }
+
+                void installPanel(final Activity a) {
                     try {
                         FloatPanel.Theme th = new FloatPanel.Theme();
                         th.title = "MmdRuntime";
@@ -101,7 +109,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                             });
                         }
                     } catch (Throwable t) {
-                        XposedBridge.log(TAG + ": overlay fail " + t);
+                        XposedBridge.log(TAG + ": overlay fail " + android.util.Log.getStackTraceString(t));
                     }
                 }
             });
