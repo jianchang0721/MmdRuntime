@@ -32,6 +32,7 @@
 
 #include "mmd/pmx.h"
 #include "bone_hook.h"
+#include "stealth.h"
 #include "public/mmd_api.h"
 #include "game/loader.h"
 #include <dirent.h>
@@ -716,6 +717,7 @@ static Stage     g_stage = ST_WAIT;
 static long long g_t0 = 0;
 static int       g_ticks = 0;
 static char      g_status[256] = "init";
+static bool      g_traced = false;   // 有人在 ptrace 我们（调试器/反作弊机器人）
 
 // ---- UI 下发的配置（mmd_get_api 的 setter 写进来，tick 消费）----
 struct UiCmd {
@@ -912,6 +914,20 @@ extern "C" void native_tick() {
     if (g_t0 == 0) { g_t0 = now_ms(); return; }
     g_ticks++;
 
+    // 每 2 秒看一次 tracer。被 ptrace 时我们什么都不做，
+    // 因为此时任何“正好在这时发生”的行为都会成为关联证据。
+    {
+        static long long lastTraceCheck = 0;
+        if (now_ms() - lastTraceCheck > 2000) {
+            lastTraceCheck = now_ms();
+            bool tr = stealth::is_traced();
+            if (tr != g_traced) {
+                g_traced = tr;
+                L("[STEALTH] tracer=%d %s", (int)tr, tr ? "暂停模型操作" : "恢复正常");
+            }
+        }
+    }
+
     switch (g_stage) {
     case ST_WAIT:
         if (now_ms() - g_t0 > 4000) {
@@ -1035,6 +1051,11 @@ extern "C" void native_tick() {
     }
 
     case ST_LOAD: {
+        if (g_traced) {
+            snprintf(g_status, sizeof(g_status), "paused: tracer attached");
+            g_stage = ST_IDLE;
+            break;
+        }
         snprintf(g_status, sizeof(g_status), "loading model");
         bool ok = do_load_model();
         if (ok) {
@@ -1207,7 +1228,11 @@ Java_com_moss_mmdruntime_HookEntry_nativeStatus(JNIEnv* env, jclass) {
 
 static void* worker(void*) {
     pick_dir();
-    L("===== libmmdruntime v1.1 (game side only) loaded =====");
+    L("===== libmmdruntime v1.2 (game side) loaded =====");
+    L("[STEALTH] installed=%d self='%s'", (int)stealth::installed(), stealth::self_path());
+    // visible_hits 走原始 fd 统计真实 maps，装好 hook 后应该是 0
+    int hits = stealth::visible_hits();
+    L("[STEALTH] real maps hits=%d %s", hits, hits == 0 ? "OK(hidden)" : "LEAKING");
     return nullptr;
 }
 
@@ -1233,6 +1258,10 @@ Java_com_moss_mmdruntime_HookEntry_nativeTouch(JNIEnv*, jclass,
 
 JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
     g_vm = vm;
+
+    // 第一件事：把 /proc 里我们的痕迹盖掉。越早装越安全——
+    // 游戏侧反作弊可能在任何时刻扫 maps，晚一秒就多一秒空窗期。
+    stealth::Install();
 
     pthread_t t;
     if (pthread_create(&t, nullptr, worker, nullptr) == 0) pthread_detach(t);
