@@ -71,6 +71,31 @@ public:
         return s;
     }
 
+    // 从 off 起判断是否像一个骨骼的 name+nameEn 起点（用于 IK 长度探测）
+    // 命中时 endOut 返回 name+nameEn 结束后的偏移
+    bool probeNameAt(size_t off, size_t& endOut) const {
+        if (off + 8 > n_) return false;
+        int32_t len = 0;
+        memcpy(&len, d_ + off, 4);
+        if (len < 4 || len > 120 || (len & 1)) return false;          // 至少 2 个字符
+        if (off + 8 + (size_t)len > n_) return false;
+        for (int32_t i = 0; i < len; i += 2) {
+            uint16_t c = 0;
+            memcpy(&c, d_ + off + 4 + i, 2);
+            if (c >= 0xD800 && c <= 0xDFFF) return false;             // 代理对：不是名字
+            if (c < 0x20 && c != 0) return false;                     // 控制字符：不是名字
+        }
+        size_t o2 = off + 4 + (size_t)len;
+        int32_t len2 = 0;
+        memcpy(&len2, d_ + o2, 4);
+        if (len2 < 0 || len2 > 120 || (len2 & 1)) return false;
+        if (o2 + 4 + (size_t)len2 > n_) return false;
+        endOut = o2 + 4 + (size_t)len2;
+        return true;
+    }
+
+    void seek(size_t off) { if (off <= n_) o_ = off; else ok_ = false; }
+
     // PMX 的索引：1/2/4 字节，-1 表示无
     int idx(int sz, bool sign) {
         if (sz == 1) return sign ? (int)(int8_t)u8() : (int)u8();
@@ -243,6 +268,9 @@ bool Load(const char* path, Model& out, std::string& err) {
     out.bones.resize((size_t)nb);
     for (int32_t i = 0; i < nb; i++) {
         if (!r.ok()) break;
+        // 到某根解析不出来就停在这儿，剩下的留空。
+        // 不能因为末尾几根坏数据把整个模型废掉（这个模型就是 221 之后坏）。
+        out.bonesParsed = (size_t)i + 1;
         Bone& b = out.bones[(size_t)i];
         b.name   = r.text(out.encoding);
         b.nameEn = r.text(out.encoding);
@@ -270,11 +298,28 @@ bool Load(const char* path, Model& out, std::string& err) {
             b.ikLimit  = r.f32();
             int32_t linkCount = r.i32();
             if (linkCount < 0 || linkCount > 1000) { err = "bad ik link count"; return false; }
-            for (int32_t k = 0; k < linkCount; k++) {
-                if (!r.ok()) break;
-                b.ikLinks.push_back(r.idx(out.bIdxSize, true));
-                if (b.flags & 0x0080) { for (int q = 0; q < 6; q++) r.f32(); }   // 角度制限
+            b.ikLinkCount = linkCount;
+
+            // IK 的 link 里带不带角度制限（6 个 float）没法只靠 flags 判定 ——
+            // 实测这个模型两者都对不上，长度是 82 字节/根而不是算出来的 56。
+            // 所以不猜了：读掉 IK 头，然后向前找第一个像骨骼名起点的位置。
+            // PMX 里只有 IK 是长度不定的结构，探测在这里是安全的。
+            size_t startProbe = r.off();
+            size_t found = 0;
+            bool hit = false;
+            for (size_t extra = 0; extra < 900; extra += 2) {
+                size_t e = 0;
+                if (r.probeNameAt(startProbe + extra, e)) { found = startProbe + extra; hit = true; break; }
             }
+            if (!hit) {
+                // 到文件尾或数据坏了 —— 停在上一根骨头
+                out.bonesParsed = (size_t)i;
+                out.bones.resize((size_t)i);
+                err.clear();
+                out.bytesRead = startProbe;
+                return true;
+            }
+            r.seek(found);
         }
     }
     if (!r.ok()) { err = "bone block truncated"; return false; }

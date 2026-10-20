@@ -50,6 +50,7 @@ struct Bone {
     int   ikLoop = 0;
     float ikLimit = 0;
     std::vector<int> ikLinks;
+    int   ikLinkCount = 0;
 
     bool isIk() const       { return (flags & 0x0020) != 0; }
     bool hasTailIndex() const { return (flags & 0x0001) != 0; }
@@ -91,6 +92,7 @@ struct Model {
     std::vector<Bone>         bones;
 
     int  weightCount[WT_COUNT] = {0, 0, 0, 0, 0};
+    size_t bonesParsed = 0;      // 实际解析成功的骨骼数（后面几根坏数据不算）
     size_t bytesRead = 0;
 
     size_t TriangleCount() const { return faceVertex.size() / 3; }
