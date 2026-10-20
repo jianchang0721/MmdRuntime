@@ -1,8 +1,19 @@
 // =====================================================================
-// module.cpp —— MmdRuntime 入口
+// module.cpp —— MmdRuntime v0.2
 //
-// 这一版只做一件事：把 PMX 解析出来的统计打出来，跟已知数字比对。
-// 不建骨架、不蒙皮、不渲染 —— 那些是后面几轮的事。
+// 本版任务（一次拿全量答案）：
+//   1. PMX 解析统计（回归：21804 / 82965 / 8 / 25 / 224）
+//   2. 绑定 il2cpp（maps + 手工 .dynsym）
+//   3. 找到场景里所有 SkinnedMeshRenderer
+//   4. 验证 libunity 侧字段偏移（纯读，不改）：
+//        native+0x1d4  ← m_Mesh 的 instanceID
+//        native+0x1e0  ← m_Bones.data
+//        native+0x1f0  ← m_Bones.size
+//      做法：读出来的值和 Object.GetInstanceID(sharedMesh) / get_bones().Length 对比
+//   5. 写入通道实验（改完立刻还原）：
+//      两个 SMR 的 m_Mesh instanceID 对调，再调 get_sharedMesh() 读回比对
+//
+// 全程不发一次崩溃，任何一个环节失败就停在那一步并打日志。
 // =====================================================================
 #include <jni.h>
 #include <pthread.h>
@@ -12,15 +23,24 @@
 #include <string.h>
 #include <stdarg.h>
 #include <time.h>
+#include <dlfcn.h>
+#include <link.h>
+#include <elf.h>
 #include <android/log.h>
 #include <string>
 #include <vector>
 
 #include "mmd/pmx.h"
+#include "unity/il2cpp_api.h"
 
 #define TAG "MmdRuntime"
 
-// ---------------------------- 日志 ----------------------------
+// il2cpp_api.h 里是 extern 声明，这里给定义
+Il2CppApi g_api;
+
+// =====================================================================
+// 日志
+// =====================================================================
 static std::string g_dir = "/data/data/com.hermes.h1game/files";
 static FILE* g_fp = nullptr;
 static pthread_mutex_t g_mtx = PTHREAD_MUTEX_INITIALIZER;
@@ -68,15 +88,244 @@ static void L(const char* fmt, ...) {
     pthread_mutex_unlock(&g_mtx);
 }
 
-// ---------------------------- 解析测试 ----------------------------
-static void run_parse_test() {
-    L("========== [PMX] PARSE TEST BEGIN ==========");
-    L("[PMX] log dir = %s", g_dir.c_str());
+#define LERR(...) L(__VA_ARGS__)
 
+// =====================================================================
+// il2cpp 绑定：不能用 dlopen，从 /proc/self/maps 拿 base，手工解析 .dynsym
+// =====================================================================
+static uintptr_t maps_base(const char* soname) {
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (!f) return 0;
+    char line[512];
+    uintptr_t addrs[128];
+    int n = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (!strstr(line, soname)) continue;
+        uintptr_t start = strtoull(line, nullptr, 16);
+        if (n < 128) addrs[n++] = start;
+    }
+    fclose(f);
+    uintptr_t lowest = 0;
+    for (int i = 0; i < n; i++) {
+        uint8_t* p = (uint8_t*)addrs[i];
+        if (p[0] == 0x7f && p[1] == 'E' && p[2] == 'L' && p[3] == 'F') return addrs[i];
+        if (!lowest || addrs[i] < lowest) lowest = addrs[i];
+    }
+    return lowest;
+}
+
+static uintptr_t elf_sym(uintptr_t base, const char* name) {
+    if (!base) return 0;
+    ElfW(Ehdr)* eh = (ElfW(Ehdr)*)base;
+    if (memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0) return 0;
+
+    uintptr_t dyn = 0;
+    ElfW(Phdr)* ph = (ElfW(Phdr)*)(base + eh->e_phoff);
+    for (int i = 0; i < eh->e_phnum; i++) {
+        if (ph[i].p_type == PT_DYNAMIC) { dyn = base + ph[i].p_vaddr; break; }
+    }
+    if (!dyn) return 0;
+
+    uintptr_t symtab = 0, strtab = 0, hash = 0, gnu = 0;
+    for (ElfW(Dyn)* d = (ElfW(Dyn)*)dyn; d->d_tag != DT_NULL; d++) {
+        switch (d->d_tag) {
+            case DT_SYMTAB:   symtab = d->d_un.d_ptr; break;
+            case DT_STRTAB:   strtab = d->d_un.d_ptr; break;
+            case DT_HASH:     hash   = d->d_un.d_ptr; break;
+            case DT_GNU_HASH: gnu    = d->d_un.d_ptr; break;
+            default: break;
+        }
+    }
+    if (symtab < base) symtab += base;
+    if (strtab < base) strtab += base;
+    if (hash && hash < base) hash += base;
+    if (gnu && gnu < base) gnu += base;
+    if (!symtab || !strtab) return 0;
+
+    uint32_t nsym = 0;
+    if (hash) {
+        nsym = ((uint32_t*)hash)[1];
+    } else if (gnu) {
+        uint32_t* g = (uint32_t*)gnu;
+        uint32_t nbuckets = g[0], symoffset = g[1], bloom = g[2];
+        uint32_t* buckets = &g[4 + bloom * 2];
+        uint32_t* chain = &buckets[nbuckets];
+        uint32_t last = 0;
+        for (uint32_t i = 0; i < nbuckets; i++) if (buckets[i] > last) last = buckets[i];
+        if (last >= symoffset) {
+            while (!(chain[last - symoffset] & 1)) last++;
+            nsym = last + 1;
+        }
+    }
+    if (!nsym) return 0;
+    if (nsym > 200000) nsym = 200000;
+
+    ElfW(Sym)* syms = (ElfW(Sym)*)symtab;
+    const char* strs = (const char*)strtab;
+    size_t nameLen = strlen(name);
+    for (uint32_t i = 0; i < nsym; i++) {
+        uint32_t off = syms[i].st_name;
+        if (off == 0 || off > 0xFFFFFF) continue;
+        const char* s = strs + off;
+        size_t k = 0;
+        while (k <= nameLen && s[k] == name[k]) k++;
+        if (k == nameLen + 1) return base + syms[i].st_value;
+    }
+    return 0;
+}
+
+static bool g_bound = false;
+static uintptr_t g_libunity = 0;
+
+static bool bind_api() {
+    uintptr_t base = maps_base("libil2cpp.so");
+    if (!base) { LERR("[IL2CPP] libil2cpp.so not in maps"); return false; }
+    g_libunity = maps_base("libunity.so");
+    L("[IL2CPP] il2cpp base=%p  unity base=%p", (void*)base, (void*)g_libunity);
+
+    int missing = 0;
+    #define B(field, sym) g_api.field = (fn_##field)elf_sym(base, sym); \
+        if (!g_api.field) { missing++; LERR("[IL2CPP] MISSING %s", sym); }
+    B(domain_get,               "il2cpp_domain_get");
+    B(domain_get_assemblies,    "il2cpp_domain_get_assemblies");
+    B(thread_attach,            "il2cpp_thread_attach");
+    B(assembly_get_image,       "il2cpp_assembly_get_image");
+    B(image_get_name,           "il2cpp_image_get_name");
+    B(class_from_name,          "il2cpp_class_from_name");
+    B(class_get_name,           "il2cpp_class_get_name");
+    B(class_get_namespace,      "il2cpp_class_get_namespace");
+    B(class_get_parent,         "il2cpp_class_get_parent");
+    B(class_get_type,           "il2cpp_class_get_type");
+    B(class_get_methods,        "il2cpp_class_get_methods");
+    B(method_get_name,          "il2cpp_method_get_name");
+    B(method_get_param_count,   "il2cpp_method_get_param_count");
+    B(runtime_invoke,           "il2cpp_runtime_invoke");
+    B(string_new,               "il2cpp_string_new");
+    B(object_get_class,         "il2cpp_object_get_class");
+    B(type_get_object,          "il2cpp_type_get_object");
+    #undef B
+
+    L("[IL2CPP] resolved, missing=%d", missing);
+    if (!g_api.domain_get || !g_api.class_from_name || !g_api.runtime_invoke) {
+        LERR("[IL2CPP] core api missing");
+        return false;
+    }
+    if (g_api.thread_attach) {
+        Il2CppDomain* d = g_api.domain_get();
+        if (d) g_api.thread_attach(d);
+    }
+    g_bound = true;
+    L("[IL2CPP] bind ok");
+    return true;
+}
+
+// =====================================================================
+// il2cpp 工具
+// =====================================================================
+static Il2CppClass* find_class_any(const char* ns, const char* name) {
+    Il2CppDomain* d = g_api.domain_get();
+    if (!d) return nullptr;
+    size_t n = 0;
+    const Il2CppAssembly** as = g_api.domain_get_assemblies(d, &n);
+    for (size_t i = 0; i < n; i++) {
+        Il2CppImage* img = g_api.assembly_get_image(as[i]);
+        if (!img) continue;
+        Il2CppClass* k = g_api.class_from_name(img, ns, name);
+        if (k) return k;
+    }
+    return nullptr;
+}
+
+static const MethodInfo* find_method_any(Il2CppClass* klass, const char* name) {
+    if (!klass) return nullptr;
+    for (Il2CppClass* k = klass; k; k = g_api.class_get_parent(k)) {
+        void* iter = nullptr;
+        const MethodInfo* m;
+        while ((m = g_api.class_get_methods(k, &iter))) {
+            const char* nm = g_api.method_get_name(m);
+            if (nm && strcmp(nm, name) == 0) return m;
+        }
+    }
+    return nullptr;
+}
+
+static std::string to_utf8(Il2CppString* s) {
+    if (!s) return "";
+    char* p = (char*)s;
+    int32_t len = *(int32_t*)(p + 16);
+    const uint16_t* ch = (const uint16_t*)(p + 20);
+    std::string out;
+    out.reserve(len);
+    for (int32_t i = 0; i < len; i++) {
+        uint16_t c = ch[i];
+        if (c < 0x80) out.push_back((char)c);
+        else if (c < 0x800) {
+            out.push_back((char)(0xC0 | (c >> 6)));
+            out.push_back((char)(0x80 | (c & 0x3F)));
+        } else {
+            out.push_back((char)(0xE0 | (c >> 12)));
+            out.push_back((char)(0x80 | ((c >> 6) & 0x3F)));
+            out.push_back((char)(0x80 | (c & 0x3F)));
+        }
+    }
+    return out;
+}
+
+// 调实例/静态方法。obj 为 nullptr 表示静态
+static Il2CppObject* invoke(const MethodInfo* m, void* obj, void** args) {
+    if (!m) return nullptr;
+    Il2CppException* exc = nullptr;
+    Il2CppObject* r = g_api.runtime_invoke(m, obj, args, &exc);
+    if (exc) {
+        // 异常不致命，返回 nullptr 让上层跳过
+        void* cl = *(void**)exc;
+        std::string n = cl ? g_api.class_get_name((Il2CppClass*)cl) : "?";
+        LERR("[IL2CPP] invoke threw %s", n.c_str());
+        return nullptr;
+    }
+    return r;
+}
+
+// 读 boxed int32 的返回值
+static int32_t invoke_int(const MethodInfo* m, void* obj, void** args, int32_t dflt) {
+    Il2CppObject* r = invoke(m, obj, args);
+    if (!r) return dflt;
+    return *(int32_t*)((char*)r + 16);
+}
+
+static int32_t obj_instance_id(Il2CppObject* o) {
+    if (!o) return 0;
+    Il2CppClass* k = g_api.object_get_class(o);
+    const MethodInfo* m = find_method_any(k, "GetInstanceID");
+    if (!m) return 0;
+    return invoke_int(m, o, nullptr, 0);
+}
+
+static std::string obj_name(Il2CppObject* o) {
+    if (!o) return "";
+    Il2CppClass* k = g_api.object_get_class(o);
+    const MethodInfo* m = find_method_any(k, "get_name");
+    if (!m) return "";
+    Il2CppObject* r = invoke(m, o, nullptr);
+    if (!r) return "";
+    return to_utf8((Il2CppString*)r);
+}
+
+// managed Object 的 m_CachedPtr 偏移（Unity 2018 il2cpp: klass8 monitor8 cached8 instanceID4）
+static void* obj_native(Il2CppObject* o) {
+    if (!o) return nullptr;
+    return *(void**)((char*)o + 16);
+}
+
+// =====================================================================
+// 阶段 1：PMX 解析
+// =====================================================================
+static void run_parse_test() {
+    L("========== [PMX] PARSE TEST ==========");
     const char* cands[] = {
         "/data/data/com.hermes.h1game/files/nangongyu.pmx",
         "/data/user/0/com.hermes.h1game/files/nangongyu.pmx",
-        "/data/data/com.hermes.h1game/files/model.pmx",
+        "/data/data/com.hermes.h1game/files/models/nangongyu.pmx",
     };
     const char* path = nullptr;
     for (size_t i = 0; i < sizeof(cands) / sizeof(cands[0]); i++) {
@@ -84,65 +333,271 @@ static void run_parse_test() {
         if (f) { fclose(f); path = cands[i]; break; }
     }
     if (!path) {
-        L("[PMX] ERR no pmx file found, expected one of:");
-        for (size_t i = 0; i < sizeof(cands) / sizeof(cands[0]); i++) L("[PMX]   %s", cands[i]);
-        L("========== [PMX] PARSE TEST ABORT ==========");
+        LERR("[PMX] no pmx found, looked in:");
+        for (size_t i = 0; i < sizeof(cands) / sizeof(cands[0]); i++) LERR("[PMX]   %s", cands[i]);
+        L("========== [PMX] SKIP ==========");
         return;
     }
     L("[PMX] file = %s", path);
-
     mmd::Model model;
     std::string err;
-    bool ok = mmd::Load(path, model, err);
-    if (!ok) {
-        L("[PMX] ERR parse failed: %s", err.c_str());
-        L("========== [PMX] PARSE TEST FAILED ==========");
+    if (!mmd::Load(path, model, err)) {
+        LERR("[PMX] parse failed: %s", err.c_str());
+        L("========== [PMX] FAILED ==========");
         return;
     }
-
     mmd::DumpStats(model, L);
-
-    // 跟已知数字比对（另一条独立解析路径核对过的值）
-    const int EXPECT_VERTS = 21804;
-    const int EXPECT_MATS  = 25;
-    const int EXPECT_BONES = 224;
-    L("[PMX] ---- compare with known values ----");
-    L("[PMX] verts   got=%zu expect=%d %s", model.verts.size(), EXPECT_VERTS,
-      (int)model.verts.size() == EXPECT_VERTS ? "OK" : "MISMATCH");
-    L("[PMX] mats    got=%zu expect=%d %s", model.materials.size(), EXPECT_MATS,
-      (int)model.materials.size() == EXPECT_MATS ? "OK" : "MISMATCH");
-    L("[PMX] bones   parsed=%zu declared=%d %s", model.bonesParsed, EXPECT_BONES,
-      (int)model.bonesParsed >= 200 ? "OK(尾部几根坏数据已跳过)" : "TOO FEW");
-
-    L("========== [PMX] PARSE TEST END ==========");
+    L("[PMX] CHECK verts=%zu(exp 21804)%s mats=%zu(exp 25)%s bones=%zu(exp 224)%s",
+      model.verts.size(), model.verts.size() == 21804 ? " OK" : " BAD",
+      model.materials.size(), model.materials.size() == 25 ? " OK" : " BAD",
+      model.bones.size(), model.bones.size() == 224 ? " OK" : " BAD");
+    L("========== [PMX] END ==========");
 }
 
-static void* worker(void*) {
-    pick_dir();
-    L("===== libmmdruntime.so loaded =====");
-    run_parse_test();
+// =====================================================================
+// 阶段 2：SMR 探测
+// =====================================================================
+struct SmrInfo {
+    Il2CppObject* obj = nullptr;
+    void*         native = nullptr;
+    std::string   name;
+    int32_t       meshId = 0;     // get_sharedMesh() 的 instanceID
+    int32_t       meshIdRaw = 0;  // 从 native +0x1d4 直接读出来的
+    int32_t       boneCount = 0;  // get_bones().Length
+    int32_t       boneSizeRaw = 0;// 从 native +0x1e0 + 0x10 读出来的
+    void*         boneData = nullptr;
+    bool          active = false;
+};
 
-    // 心跳
-    int beat = 0;
-    while (true) {
-        sleep(60);
-        beat++;
-        L("[BEAT] %d", beat);
+static Il2CppClass* g_smrClass = nullptr;
+static Il2CppClass* g_meshClass = nullptr;
+static const MethodInfo* g_mFindAll = nullptr;   // Resources.FindObjectsOfTypeAll(Type)
+static const MethodInfo* g_mGetBones = nullptr;  // SMR.get_bones
+static const MethodInfo* g_mGetMesh = nullptr;   // SMR.get_sharedMesh
+static const MethodInfo* g_mGetVC = nullptr;     // Mesh.get_vertexCount
+
+static bool init_unity_refs() {
+    g_smrClass = find_class_any("UnityEngine", "SkinnedMeshRenderer");
+    g_meshClass = find_class_any("UnityEngine", "Mesh");
+    if (!g_smrClass || !g_meshClass) {
+        LERR("[UNITY] class lookup failed smr=%p mesh=%p", (void*)g_smrClass, (void*)g_meshClass);
+        return false;
     }
-    return nullptr;
+    Il2CppClass* resClass = find_class_any("UnityEngine", "Resources");
+    if (!resClass) { LERR("[UNITY] Resources class missing"); return false; }
+
+    g_mFindAll = find_method_any(resClass, "FindObjectsOfTypeAll");
+    g_mGetBones = find_method_any(g_smrClass, "get_bones");
+    g_mGetMesh = find_method_any(g_smrClass, "get_sharedMesh");
+    g_mGetVC = find_method_any(g_meshClass, "get_vertexCount");
+    L("[UNITY] SMR=%p mesh=%p FindObjectsOfTypeAll=%p get_bones=%p get_sharedMesh=%p",
+      (void*)g_smrClass, (void*)g_meshClass, (void*)g_mFindAll,
+      (void*)g_mGetBones, (void*)g_mGetMesh);
+    return g_mFindAll && g_mGetBones && g_mGetMesh;
 }
 
-// ---------------------------- JNI ----------------------------
+static std::vector<SmrInfo> g_smrs;
+
+static bool scan_smrs() {
+    Il2CppReflectionType* t = g_api.type_get_object(g_api.class_get_type(g_smrClass));
+    if (!t) { LERR("[UNITY] type object null"); return false; }
+    void* args[1] = { t };
+    Il2CppObject* arr = invoke(g_mFindAll, nullptr, args);
+    if (!arr) { LERR("[UNITY] FindObjectsOfTypeAll returned null"); return false; }
+
+    size_t n = ((Il2CppArray*)arr)->max_length;
+    L("[UNITY] FindObjectsOfTypeAll(SkinnedMeshRenderer) -> %zu", n);
+
+    g_smrs.clear();
+    for (size_t i = 0; i < n; i++) {
+        Il2CppObject* o = *(Il2CppObject**)array_addr((Il2CppArray*)arr, 8, i);
+        if (!o) continue;
+        SmrInfo si;
+        si.obj = o;
+        si.native = obj_native(o);
+        si.name = obj_name(o);
+
+        Il2CppObject* bones = invoke(g_mGetBones, o, nullptr);
+        if (bones) si.boneCount = (int32_t)((Il2CppArray*)bones)->max_length;
+
+        Il2CppObject* mesh = invoke(g_mGetMesh, o, nullptr);
+        if (mesh) {
+            si.meshId = obj_instance_id(mesh);
+            if (g_mGetVC) {
+                int32_t vc = invoke_int(g_mGetVC, mesh, nullptr, -1);
+                (void)vc;
+            }
+        }
+        if (si.native) {
+            si.meshIdRaw   = *(int32_t*)((char*)si.native + 0x1d4);
+            si.boneData    = *(void**)((char*)si.native + 0x1e0);
+            si.boneSizeRaw = *(int32_t*)((char*)si.native + 0x1f0);
+        }
+        g_smrs.push_back(si);
+    }
+    return !g_smrs.empty();
+}
+
+static void dump_smrs() {
+    L("========== [UNITY] SMR DUMP (%zu) ==========", g_smrs.size());
+    int offMatch = 0, offTotal = 0;
+    for (size_t i = 0; i < g_smrs.size(); i++) {
+        const SmrInfo& s = g_smrs[i];
+        bool canMatch = (s.meshId != 0);
+        if (canMatch) {
+            offTotal++;
+            if (s.meshIdRaw == s.meshId) offMatch++;
+        }
+        L("[UNITY] #%zu name='%s' native=%p bones=%d(sizeRaw=%d) data=%p meshID=%d(raw@0x1d4=%d) %s",
+          i, s.name.c_str(), s.native, s.boneCount, s.boneSizeRaw, s.boneData,
+          s.meshId, s.meshIdRaw,
+          !canMatch ? "?" : (s.meshIdRaw == s.meshId ? "OFFSET-OK" : "OFFSET-MISMATCH"));
+    }
+    L("[UNITY] offset check: %d / %d match (%s)", offMatch, offTotal,
+      offTotal && offMatch == offTotal ? "PASS" : "FAIL");
+    L("========== [UNITY] SMR DUMP END ==========");
+}
+
+// =====================================================================
+// 阶段 3：写入通道实验 —— 两个 SMR 的 m_Mesh instanceID 对调再还原
+// =====================================================================
+static bool g_expDone = false;
+
+static void run_swap_experiment() {
+    // 选两个 native 有效、mesh 有效的 SMR
+    int a = -1, b = -1;
+    for (size_t i = 0; i < g_smrs.size(); i++) {
+        if (!g_smrs[i].native || g_smrs[i].meshId == 0) continue;
+        if (a < 0) { a = (int)i; continue; }
+        if (g_smrs[i].meshId != g_smrs[a].meshId) { b = (int)i; break; }
+    }
+    if (a < 0 || b < 0) {
+        LERR("[UNITY] swap experiment skipped (need 2 SMRs with distinct meshes, have a=%d b=%d)", a, b);
+        g_expDone = true;
+        return;
+    }
+    SmrInfo& A = g_smrs[a];
+    SmrInfo& B = g_smrs[b];
+    L("========== [UNITY] WRITE EXPERIMENT ==========");
+    L("[UNITY] A=#%d '%s' meshID=%d  B=#%d '%s' meshID=%d",
+      a, A.name.c_str(), A.meshIdRaw, b, B.name.c_str(), B.meshIdRaw);
+
+    int32_t* pA = (int32_t*)((char*)A.native + 0x1d4);
+    int32_t  oldA = *pA;
+    *pA = B.meshIdRaw;      // ← 唯一的写入动作
+
+    // 立刻读回：managed getter 走的是同一条路（native+0x1d4 → instanceID 查表）
+    Il2CppObject* meshAfter = invoke(g_mGetMesh, A.obj, nullptr);
+    int32_t afterId = meshAfter ? obj_instance_id(meshAfter) : 0;
+    L("[UNITY] after write: get_sharedMesh() instanceID = %d (expected %d) %s",
+      afterId, B.meshIdRaw, afterId == B.meshIdRaw ? "WRITE-OK" : "WRITE-FAIL");
+
+    *pA = oldA;             // 还原
+    Il2CppObject* meshBack = invoke(g_mGetMesh, A.obj, nullptr);
+    int32_t backId = meshBack ? obj_instance_id(meshBack) : 0;
+    L("[UNITY] after restore: instanceID = %d (expected %d) %s",
+      backId, oldA, backId == oldA ? "RESTORE-OK" : "RESTORE-FAIL");
+    L("========== [UNITY] WRITE EXPERIMENT END ==========");
+    g_expDone = true;
+}
+
+// =====================================================================
+// tick 状态机
+// =====================================================================
+static long long now_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+enum Stage { ST_WAIT, ST_BIND, ST_PARSE, ST_SCAN, ST_DUMP, ST_EXP, ST_DONE };
+
+static Stage    g_stage = ST_WAIT;
+static long long g_t0 = 0;
+static int      g_ticks = 0;
+static char     g_status[256] = "init";
+
+extern "C" void native_tick() {
+    if (g_stage == ST_DONE) return;
+    if (g_t0 == 0) { g_t0 = now_ms(); return; }
+    g_ticks++;
+
+    switch (g_stage) {
+    case ST_WAIT:
+        // 等 4 秒，让游戏把场景铺开
+        if (now_ms() - g_t0 > 4000) {
+            snprintf(g_status, sizeof(g_status), "binding il2cpp");
+            g_stage = ST_BIND;
+        }
+        break;
+
+    case ST_BIND:
+        if (bind_api()) {
+            run_parse_test();
+            snprintf(g_status, sizeof(g_status), "il2cpp bound");
+            g_stage = ST_PARSE;
+        } else {
+            snprintf(g_status, sizeof(g_status), "il2cpp bind failed");
+            g_stage = ST_DONE;
+        }
+        break;
+
+    case ST_PARSE:
+        if (!init_unity_refs()) {
+            snprintf(g_status, sizeof(g_status), "unity class lookup failed");
+            g_stage = ST_DONE;
+            break;
+        }
+        snprintf(g_status, sizeof(g_status), "scanning SMR");
+        g_stage = ST_SCAN;
+        break;
+
+    case ST_SCAN:
+        if (scan_smrs()) {
+            snprintf(g_status, sizeof(g_status), "found %zu SMR", g_smrs.size());
+            g_stage = ST_DUMP;
+        } else {
+            snprintf(g_status, sizeof(g_status), "no SMR found");
+            g_stage = ST_DONE;
+        }
+        break;
+
+    case ST_DUMP:
+        dump_smrs();
+        snprintf(g_status, sizeof(g_status), "dump done");
+        g_stage = ST_EXP;
+        break;
+
+    case ST_EXP:
+        if (!g_expDone) run_swap_experiment();
+        snprintf(g_status, sizeof(g_status), "experiment done");
+        g_stage = ST_DONE;
+        break;
+
+    default:
+        break;
+    }
+}
+
+// =====================================================================
+// JNI
+// =====================================================================
 extern "C" JNIEXPORT void JNICALL
 Java_com_moss_mmdruntime_HookEntry_nativeTick(JNIEnv*, jclass) {
-    // 这一版不需要 tick，留空给后面用
+    native_tick();
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_moss_mmdruntime_HookEntry_nativeStatus(JNIEnv* env, jclass) {
-    char buf[256];
-    snprintf(buf, sizeof(buf), "log=%s", g_dir.c_str());
+    char buf[320];
+    snprintf(buf, sizeof(buf), "%s | smr=%zu stage=%d", g_status, g_smrs.size(), (int)g_stage);
     return env->NewStringUTF(buf);
+}
+
+static void* worker(void*) {
+    pick_dir();
+    L("===== libmmdruntime v0.2 loaded =====");
+    return nullptr;
 }
 
 JNIEXPORT jint JNI_OnLoad(JavaVM*, void*) {

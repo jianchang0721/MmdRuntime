@@ -296,7 +296,8 @@ bool Load(const char* path, Model& out, std::string& err) {
         if (b.flags & 0x0200) { r.idx(out.bIdxSize, true); r.f32(); }        // 付与移動
         if (b.flags & 0x0400) { r.f32(); r.f32(); r.f32(); }                 // 軸固定
         if (b.flags & 0x0800) { for (int k = 0; k < 6; k++) r.f32(); }       // ローカル軸
-        if (b.flags & 0x1000) { r.i32(); }                                   // 外部親
+        if (b.flags & 0x2000) { r.i32(); }                                   // 外部親変形（0x2000，不是 0x1000）
+                                                                              // 0x1000 是「物理後変形」，不带额外数据
         if (b.flags & 0x0020) {                                              // IK
             b.hasIk    = true;
             b.ikTarget = r.idx(out.bIdxSize, true);
@@ -305,27 +306,15 @@ bool Load(const char* path, Model& out, std::string& err) {
             int32_t linkCount = r.i32();
             if (linkCount < 0 || linkCount > 1000) { err = "bad ik link count"; return false; }
             b.ikLinkCount = linkCount;
-
-            // IK 的 link 里带不带角度制限（6 个 float）没法只靠 flags 判定 ——
-            // 实测这个模型两者都对不上，长度是 82 字节/根而不是算出来的 56。
-            // 所以不猜了：读掉 IK 头，然后向前找第一个像骨骼名起点的位置。
-            // PMX 里只有 IK 是长度不定的结构，探测在这里是安全的。
-            size_t startProbe = r.off();
-            size_t found = 0;
-            bool hit = false;
-            for (size_t extra = 0; extra < 900; extra += 2) {
-                size_t e = 0;
-                if (r.probeNameAt(startProbe + extra, e)) { found = startProbe + extra; hit = true; break; }
+            b.ikLinks.clear();
+            b.ikLinks.reserve((size_t)linkCount);
+            // PMX 规范：每个 link = 骨骼索引 + hasLimit(uint8)，hasLimit 时跟 6 个 float
+            // （lower xyz + upper xyz）。长度是确定的，不需要任何探测。
+            for (int32_t k = 0; k < linkCount; k++) {
+                b.ikLinks.push_back(r.idx(out.bIdxSize, true));
+                uint8_t hasLimit = r.u8();
+                if (hasLimit) { for (int j = 0; j < 6; j++) r.f32(); }
             }
-            if (!hit) {
-                // 到文件尾或数据坏了 —— 停在上一根骨头
-                out.bonesParsed = (size_t)i;
-                out.bones.resize((size_t)i);
-                err.clear();
-                out.bytesRead = startProbe;
-                return true;
-            }
-            r.seek(found);
         }
     }
     if (!r.ok()) { err = "bone block truncated"; return false; }
