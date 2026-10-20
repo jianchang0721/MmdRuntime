@@ -48,6 +48,7 @@ public class HookEntry implements IXposedHookLoadPackage {
     static final String UI_SO   = "libimgui_overlay.so";
 
     static final String GAME_FILES = "/data/data/com.hermes.h1game/files";
+    static final String CUSTOM_SO_DIR = GAME_FILES + "/so";
     static final String[] DIRS = {
             "/data/data/com.hermes.h1game/files/",
             "/data/user/0/com.hermes.h1game/files/",
@@ -166,7 +167,40 @@ public class HookEntry implements IXposedHookLoadPackage {
                 sb.append(" | fontPath=").append(t);
             }
         }
+
+        // ⑤ 玩家自己拖进来的 so（App 的「加载自定义 so」放这里）
+        String r5 = loadCustomSos();
+        sb.append(" | customSo=").append(r5);
         return sb.toString();
+    }
+
+    /**
+     * 加载 files/so/ 下玩家自己放的 .so。
+     *
+     * 用 System.load 而不是 android_dlopen_ext：这些是第三方 native 库，
+     * 大概率带 JNI_OnLoad，走 ART 那条路才能被正确注册。
+     * 每个单独 try，一个挂了不影响后面的。
+     */
+    static String loadCustomSos() {
+        File dir = new File(CUSTOM_SO_DIR);
+        File[] files = dir.listFiles();
+        if (files == null || files.length == 0) return "none";
+
+        int ok = 0, fail = 0;
+        for (File f : files) {
+            if (!f.isFile()) continue;
+            String n = f.getName();
+            if (!n.endsWith(".so")) continue;
+            try {
+                System.load(f.getAbsolutePath());
+                ok++;
+                XposedBridge.log(TAG + ": custom so loaded " + n + " (" + f.length() + "B)");
+            } catch (Throwable t) {
+                fail++;
+                XposedBridge.log(TAG + ": custom so FAILED " + n + " -> " + t);
+            }
+        }
+        return ok + " ok / " + fail + " fail";
     }
 
     /**

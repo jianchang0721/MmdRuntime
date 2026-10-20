@@ -37,12 +37,15 @@ public class MainActivity extends Activity {
     static final String GAME_FILES  = "/data/data/com.hermes.h1game/files";
     static final String MODELS_DIR  = GAME_FILES + "/models";
     static final String ACTIVE_FILE = GAME_FILES + "/mmdrt_active.txt";
+    static final String SO_DIR = GAME_FILES + "/so";
     static final int REQ_TREE = 1001;
+    static final int REQ_SO   = 1003;
 
     TextView logView;
     ScrollView scroller;
     Button pickBtn;
     Button overlayBtn;
+    Button soBtn;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -80,16 +83,22 @@ public class MainActivity extends Activity {
         });
         root.addView(pickBtn, lp(-1, -2, 0, 0, 0, dp(8)));
 
-        Button authBtn = mkButton("③ root 授权检查");
+        soBtn = mkButton("③ 加载自定义 so");
+        soBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { pickSoFile(); }
+        });
+        root.addView(soBtn, lp(-1, -2, 0, 0, 0, dp(8)));
+
+        Button authBtn = mkButton("④ 权限审查");
         authBtn.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { checkRoot(); }
+            @Override public void onClick(View v) { checkPerms(); }
         });
         root.addView(authBtn, lp(-1, -2, 0, 0, 0, dp(14)));
 
         TextView tip = new TextView(this);
         tip.setText("菜单现在直接画在游戏画面里（hook eglSwapBuffers），启动游戏就出现，不用先开这个 App。\n"
                   + "面板挡着游戏就点右上角 X 收成小条，点小条再展开。\n"
-                  + "导入模型时 KernelSU 会弹 root 授权，点允许。");
+                  + "权限审查查四项：root / LSPosed 启用 / 作用域 / so 是否就位。");
         tip.setTextColor(0xFF667088);
         tip.setTextSize(10);
         root.addView(tip, lp(-1, -2, 0, 0, 0, dp(12)));
@@ -154,6 +163,115 @@ public class MainActivity extends Activity {
 
     // ---------------- 选文件夹 ----------------
 
+    // ---------------- 加载自定义 so ----------------
+
+    /**
+     * 让玩家选一个 .so 文件。
+     *
+     * 落点：游戏私有目录 files/so/<原名>，之后 HookEntry 的
+     * doLoad() 会按顺序 System.load 它（现在是最后一个加载，
+     * 排在 libmmdruntime 和 libimgui_overlay 之后）。
+     *
+     * 走 ACTION_OPEN_DOCUMENT 而不是 ACTION_GET_CONTENT：
+     * 前者返回的是持久的 tree 授权，能反复读同一个文件。
+     */
+    void pickSoFile() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("application/octet-stream");
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivityForResult(i, REQ_SO);
+        } catch (Throwable t) {
+            // 某些国产 ROM 的文档选择器对 octet-stream 支持不好，退回任意类型
+            i.setType("*/*");
+            try {
+                startActivityForResult(i, REQ_SO);
+            } catch (Throwable t2) {
+                log("打不开文件选择器: " + t2);
+            }
+        }
+    }
+
+    void importSo(Uri soUri) {
+        final String name = querySoName(soUri);
+        if (name == null || name.isEmpty()) {
+            log("读不到文件名");
+            return;
+        }
+        // 安全：只收 .so，且挡掉路径穿越
+        final String safe = sanitize(name);
+        if (!safe.toLowerCase().endsWith(".so")) {
+            log("只收 .so 文件，拿到的是: " + safe);
+            return;
+        }
+
+        log("选中: " + safe);
+        soBtn.setEnabled(false);
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    File stage = new File(getCacheDir(), "so");
+                    deleteRec(stage);
+                    if (!stage.mkdirs()) throw new Exception("建不了临时目录");
+                    File local = new File(stage, safe);
+                    InputStream in = getContentResolver().openInputStream(soUri);
+                    if (in == null) throw new Exception("打不开选中的文件");
+                    copyStream(in, local);
+
+                    long sz = local.length();
+                    if (sz < 4096) throw new Exception("文件太小 (" + sz + " 字节)，不像 so");
+                    if (sz > 64 * 1024 * 1024) throw new Exception("文件太大 (" + sz / 1048576 + "MB)");
+
+                    int uid = gameUid();
+                    String dst = SO_DIR + "/" + safe;
+                    StringBuilder cmd = new StringBuilder();
+                    cmd.append("set -e; ");
+                    cmd.append("mkdir -p '").append(SO_DIR).append("'; ");
+                    cmd.append("rm -f '").append(dst).append("'; ");
+                    cmd.append("cp '").append(local.getAbsolutePath()).append("' '").append(dst).append("'; ");
+                    cmd.append("chown ").append(uid).append(":").append(uid).append(" '").append(dst).append("'; ");
+                    cmd.append("chmod 755 '").append(dst).append("'; ");
+                    cmd.append("ls -l '").append(dst).append("'");
+
+                    String out = su(cmd.toString());
+                    ui("已放到 " + dst);
+                    if (out != null && !out.trim().isEmpty()) ui(out.trim());
+                    ui("完成。重启游戏后 HookEntry 会加载它。");
+                } catch (Throwable t) {
+                    ui("失败: " + t);
+                } finally {
+                    ui2(new Runnable() { @Override public void run() { soBtn.setEnabled(true); } });
+                }
+            }
+        }).start();
+    }
+
+    String querySoName(Uri uri) {
+        android.database.Cursor c = null;
+        try {
+            c = getContentResolver().query(uri,
+                    new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null);
+            if (c != null && c.moveToFirst()) return c.getString(0);
+        } catch (Throwable ignored) {
+        } finally {
+            if (c != null) try { c.close(); } catch (Throwable ignored) { }
+        }
+        // 兜底：从路径尾巴猜
+        String p = uri.getPath();
+        if (p != null) {
+            int i = p.lastIndexOf('/');
+            if (i >= 0 && i + 1 < p.length()) return p.substring(i + 1);
+        }
+        return null;
+    }
+
+    void ui2(Runnable r) {
+        runOnUiThread(r);
+    }
+
+    // ---------------- 选文件夹 ----------------
+
     void pickFolder() {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -167,6 +285,13 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+
+        if (req == REQ_SO) {
+            if (res != RESULT_OK || data == null || data.getData() == null) return;
+            importSo(data.getData());
+            return;
+        }
+
         if (req != REQ_TREE || res != RESULT_OK || data == null || data.getData() == null) return;
         final Uri tree = data.getData();
         log("选中: " + tree);
@@ -330,23 +455,106 @@ public class MainActivity extends Activity {
         return sb.toString();
     }
 
-    // ---------------- root 检查 ----------------
+    // ---------------- 权限审查 ----------------
+
+    // 逐项查：root、LSPosed 模块启用、作用域、so 是否就位
+    void checkPerms() {
+        log("------ 权限审查 ------");
+        checkRoot();
+        checkLsposed();
+        checkSoFiles();
+    }
 
     void checkRoot() {
-        log("------ root 授权检查 ------");
         new Thread(new Runnable() {
             @Override public void run() {
                 try {
                     String out = su("id -u");
-                    if (out != null && out.contains("0")) {
-                        ui("✓ 已有 root，KSU 已授权本应用");
+                    if (out != null && out.trim().startsWith("0")) {
+                        ui("✓ root：已授权");
                     } else {
-                        ui("su 执行了但不是 root: " + out);
-                        ui("去 KernelSU 管理器 → MmdRuntime → 允许");
+                        ui("✗ root：su 可用但不是 root (" + out.trim() + ")");
+                        ui("  去 KernelSU 管理器 → MmdRuntime → 允许");
                     }
                 } catch (Throwable t) {
-                    ui("✗ su 不可用: " + t.getClass().getSimpleName());
-                    ui("打开 KernelSU 管理器 → 应用列表 → MmdRuntime → 开 root。");
+                    ui("✗ root：su 不可用");
+                    ui("  打开 KernelSU 管理器 → 应用 → MmdRuntime → 开 root");
+                }
+            }
+        }).start();
+    }
+
+    // 走 lspd 的 cli（vector-cli）。root 已授权，直接问它最准。
+    void checkLsposed() {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                String pkg = getPackageName();
+
+                // 1) 模块启用状态
+                try {
+                    String out = su("/data/adb/lspd/cli --json modules ls");
+                    if (out == null || out.trim().isEmpty()) {
+                        ui("? LSPosed：cli 没输出，可能不是 LSPosed");
+                        return;
+                    }
+                    // 找到我们自己那段："PACKAGE": "<pkg>" ... "STATUS": "enabled"
+                    int i = out.indexOf("\"" + pkg + "\"");
+                    if (i < 0) {
+                        ui("✗ LSPosed：模块列表里没有 " + pkg);
+                        ui("  装的是 LSPosed 吗？管理器里能看到 MmdRuntime 吗？");
+                        return;
+                    }
+                    int j = out.indexOf("STATUS", i);
+                    String status = "";
+                    if (j > 0) {
+                        int q1 = out.indexOf('"', out.indexOf(':', j));
+                        int q2 = q1 > 0 ? out.indexOf('"', q1 + 1) : -1;
+                        if (q2 > q1) status = out.substring(q1 + 1, q2);
+                    }
+                    if ("enabled".equals(status)) ui("✓ LSPosed：模块已启用");
+                    else ui("✗ LSPosed：模块 " + (status.isEmpty() ? "状态未知" : status));
+
+                    // 2) 作用域
+                    String sc = su("/data/adb/lspd/cli scope ls " + pkg);
+                    if (sc != null && sc.contains(GAME_PKG)) {
+                        ui("✓ 作用域：已包含 " + GAME_PKG);
+                    } else {
+                        ui("✗ 作用域：没有 " + GAME_PKG);
+                        ui("  LSPosed → 模块 → MmdRuntime → 作用域 → 勾选游戏");
+                    }
+                } catch (Throwable t) {
+                    ui("✗ LSPosed 查询失败: " + t);
+                }
+            }
+        }).start();
+    }
+
+    // 游戏私有目录里躺着的 so 对不对
+    void checkSoFiles() {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    String out = su("ls -l " + GAME_FILES + "/libmmdruntime.so "; + GAME_FILES + "/*.so 2>/dev/null");
+                    if (out == null || out.trim().isEmpty()) {
+                        ui("✗ so：游戏目录里没有 libmmdruntime.so");
+                        ui("  " + GAME_FILES + "/");
+                        return;
+                    }
+                    boolean hasMain = out.contains("libmmdruntime.so");
+                    if (hasMain) ui("✓ so：libmmdruntime.so 在");
+                    else {
+                        ui("✗ so：缺 libmmdruntime.so");
+                        ui(out.trim());
+                    }
+                    // 历史残留提醒
+                    int stale = 0;
+                    for (String line : out.split("\n")) {
+                        if (line.contains("libil2cpp_ext_") || line.contains("libmmdruntime_")
+                                || line.contains("libmmdbg_")) stale++;
+                    }
+                    if (stale > 0) ui("! so：有 " + stale + " 个历史残留文件，建议清");
+                } catch (Throwable t) {
+                    ui("✗ so 查询失败: " + t);
                 }
             }
         }).start();
