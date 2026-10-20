@@ -1,18 +1,23 @@
 package com.moss.mmdruntime;
 
 import android.app.Activity;
+import android.content.Context;
+import android.content.pm.ApplicationInfo;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Process;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewGroup;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+
+import com.moss.mmdruntime.service.JniBridge;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -21,64 +26,76 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * MmdRuntime —— 独立 MMD 运行时的壳（v0.9）
+ * MmdRuntime 注入壳（v1.2）
  *
- * 这一版把 View 悬浮窗整个删了：往游戏 DecorView 里加 View 在部分 Activity 上
- * 会碰上 getResources() 未初始化的坑，直接把游戏带闪退（实测）。
+ * 干四件事：
+ *   1. 把 libmmdruntime.so 和 libimgui_overlay.so 复制改名后 System.load
+ *      （先游戏逻辑，后 UI —— UI 初始化时要找 mmd_get_api）
+ *   2. 从模块自己的 APK 里解出字体到游戏私有目录，喂给 UI so
+ *   3. 每 16ms 调一次 nativeTick（游戏主线程）驱动 MMD 状态机
+ *   4. hook Activity.dispatchTouchEvent 把触摸喂给 ImGui，菜单吃掉的不给游戏
  *
- * 现在 UI 全在 so 里：ImGui 挂 eglSwapBuffers，画在游戏自己的 GL 帧上。
- * 壳只干四件事：
- *   1. 把 libmmdruntime.so 复制改名后 System.load
- *   2. 每 16ms 调一次 nativeTick（主线程）
- *   3. 把触摸事件转发给 native（菜单吃掉事件时返回 true）
- *   4. 把类自身交给 native，供 ImGui 按钮回调（重载 so / 状态）
+ * 已经没有的东西（v1.0~v1.1 那一套）：
+ *   · 往 DecorView 里塞 View（游戏 Activity 的 getResources() 未就绪时必崩）
+ *   · 独立 App 进程 + WindowManager 悬浮窗 + 前台服务
+ *   · 广播拉起（MIUI 会拦 stopped state 的进程）
+ *   · ui.conf / status.conf 文件通道
  */
 public class HookEntry implements IXposedHookLoadPackage {
 
     static final String TAG = "MmdRuntime";
     static final String PKG = "com.hermes.h1game";
-    static final String SO_BASE = "libmmdruntime";
-    static final String SO_NAME = SO_BASE + ".so";
+
+    static final String GAME_SO = "libmmdruntime.so";
+    static final String UI_SO   = "libimgui_overlay.so";
+
+    static final String GAME_FILES = "/data/data/com.hermes.h1game/files";
     static final String[] DIRS = {
             "/data/data/com.hermes.h1game/files/",
             "/data/user/0/com.hermes.h1game/files/",
     };
 
+    // ---- 游戏侧 so 的 JNI ----
     private static native void nativeTick();
     private static native String nativeStatus();
     private static native void nativeBind(Class<?> cls);
     private static native void nativeReset();
-    private static native boolean nativeTouch(int action, float x, float y, float vw, float vh);
 
-    static int loadSeq = 0;
+    static int  loadSeq      = 0;
+    static int  uiLoadSeq    = 0;
     static String lastStatus = "尚未加载";
     static Handler tickHandler = null;
-    static int tickCount = 0;
-    static volatile boolean soReady = false;
+    static int tickCount     = 0;
+
+    static volatile boolean gameSoReady = false;
+    static volatile boolean uiSoReady   = false;
+    static volatile boolean fontsReady  = false;
+
+    static String latinFontPath = "";
+    static String cjkFontPath   = "";
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
         if (!PKG.equals(lp.packageName)) return;
         XposedBridge.log(TAG + ": hooked " + lp.packageName + " pid=" + Process.myPid());
-        // 联动悬浮窗：游戏一启动就通知 MmdRuntime App 弹窗。
-        // 显式广播不需要任何权限、不依赖 root；Application 未就绪时 receiver
-        // 端收不到也由下面的 Activity onCreate 重发一次兜底。
-        notifyGameLaunched();
+        if (!isMainProcess()) {
+            XposedBridge.log(TAG + ": 子进程，跳过");
+            return;
+        }
+
         try {
             Class<?> actCls = XposedHelpers.findClass("android.app.Activity", lp.classLoader);
 
-            // 第一个 Activity 出现时加载 so（不建任何 View）
+            // 第一个 Activity 出现后再加载 so：这时进程稳定，也没有早期 classloader 问题
             XposedBridge.hookAllMethods(actCls, "onCreate", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     Activity a = (Activity) param.thisObject;
                     if (a == null) return;
-                    if (loadSeq == 0 && isMainProcess()) {
-                        lastStatus = doLoad();
+                    if (loadSeq == 0) {
+                        lastStatus = doLoad(a);
                         XposedBridge.log(TAG + ": " + lastStatus);
                     }
-                    // Application 此时必然就绪，重发一次联动广播兜底
-                    notifyGameLaunched();
                 }
             });
 
@@ -86,17 +103,18 @@ public class HookEntry implements IXposedHookLoadPackage {
             XposedBridge.hookAllMethods(actCls, "dispatchTouchEvent", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    if (!soReady || param.args == null || param.args.length < 1) return;
+                    if (!uiSoReady || param.args == null || param.args.length < 1) return;
                     try {
                         MotionEvent ev = (MotionEvent) param.args[0];
                         if (ev == null) return;
                         View decor = ((Activity) param.thisObject).getWindow().getDecorView();
                         int w = decor.getWidth(), h = decor.getHeight();
                         if (w <= 0 || h <= 0) return;
-                        boolean eaten = nativeTouch(ev.getActionMasked(), ev.getX(), ev.getY(),
-                                (float) w, (float) h);
+                        boolean eaten = JniBridge.INSTANCE.onTouchEvent(
+                                ev.getActionMasked(), ev.getX(), ev.getY(), (float) w, (float) h);
                         if (eaten) param.setResult(true);
-                    } catch (Throwable ignored) { }
+                    } catch (Throwable ignored) {
+                    }
                 }
             });
         } catch (Throwable t) {
@@ -104,28 +122,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
     }
 
-    // ---------------- 联动悬浮窗 ----------------
-
-    /** 向 MmdRuntime App 发「游戏已启动」显式广播。无权限要求、无 root 依赖。 */
-    static void notifyGameLaunched() {
-        try {
-            Class<?> atCls = XposedHelpers.findClass("android.app.ActivityThread", null);
-            Object app = XposedHelpers.callStaticMethod(atCls, "currentApplication");
-            if (app instanceof android.content.Context) {
-                android.content.Intent i =
-                        new android.content.Intent("com.moss.mmdruntime.action.GAME_LAUNCHED");
-                i.setPackage("com.moss.mmdruntime");
-                // FLAG_INCLUDE_STOPPED_PACKAGES：App 装完没手动启动过就处于 stopped
-                // state，不带这个 flag 系统直接吞掉广播（实测 result=0 没人收）。
-                i.addFlags(android.content.Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
-                ((android.content.Context) app).sendBroadcast(i);
-            }
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + ": notify fail " + t);
-        }
-    }
-
-    // ---------------- so 加载 ----------------
+    // ================= 加载 =================
 
     static boolean isMainProcess() {
         try {
@@ -139,17 +136,51 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
     }
 
-    /** static 且签名固定：native 侧通过 methodID 反射调用。 */
-    public static synchronized String doLoad() {
+    /** static 且签名固定：游戏侧 so 通过 methodID 反射调用 */
+    public static synchronized String doLoad(Activity act) {
+        StringBuilder sb = new StringBuilder();
+
+        // ① 游戏逻辑 so（必须第一个）
+        String r1 = loadSo(GAME_SO, true);
+        sb.append("game=").append(r1);
+
+        // ② 字体（UI so 依赖）
+        String r2 = prepareFonts(act);
+        sb.append(" | fonts=").append(r2);
+
+        // ③ UI so
+        String r3 = loadSo(UI_SO, false);
+        sb.append(" | ui=").append(r3);
+
+        // ④ 字体路径喂给 UI so
+        if (uiSoReady) {
+            try {
+                JniBridge.INSTANCE.setFontPaths(latinFontPath, cjkFontPath);
+                JniBridge.INSTANCE.setConfigDirectory(GAME_FILES + "/mmdrt");
+                sb.append(" | fontPath=ok");
+            } catch (Throwable t) {
+                sb.append(" | fontPath=").append(t);
+            }
+        }
+        return sb.toString();
+    }
+
+    static String loadSo(String soName, boolean isGameSide) {
         File src = null;
         String dir = null;
         for (String d : DIRS) {
-            File f = new File(d, SO_NAME);
-            if (f.exists() && f.canRead()) { src = f; dir = d; break; }
+            File f = new File(d, soName);
+            if (f.exists() && f.canRead()) {
+                src = f;
+                dir = d;
+                break;
+            }
         }
-        if (src == null) return "找不到 " + SO_NAME + "（应放在 " + DIRS[0] + "）";
+        if (src == null) return "找不到 " + soName + "（应放在 " + DIRS[0] + "）";
 
-        String dstName = SO_BASE + "_" + (++loadSeq) + ".so";
+        String base = soName.endsWith(".so") ? soName.substring(0, soName.length() - 3) : soName;
+        int seq = isGameSide ? (++loadSeq) : (++uiLoadSeq);
+        String dstName = base + "_" + seq + ".so";
         File dst = new File(dir, dstName);
         try {
             copy(src, dst);
@@ -158,18 +189,64 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
         try {
             System.load(dst.getAbsolutePath());
-            soReady = true;
-            try { nativeBind(HookEntry.class); } catch (Throwable ignored) { }
-            startTick();
-            return "已加载 " + dstName + "  " + dst.length() + " 字节";
+            if (isGameSide) {
+                gameSoReady = true;
+                try { nativeBind(HookEntry.class); } catch (Throwable ignored) { }
+                startTick();
+            } else {
+                uiSoReady = true;
+            }
+            return "ok(" + dstName + " " + dst.length() + "B)";
         } catch (Throwable t) {
             return "dlopen 失败: " + t;
         }
     }
 
-    /** ImGui 面板状态按钮用；和 nativeStatus 同源。 */
-    public static String getStatus() {
-        try { return nativeStatus(); } catch (Throwable t) { return lastStatus; }
+    // ================= 字体 =================
+
+    /**
+     * 模块 APK 里的 assets/fonts 解到游戏私有目录。
+     *
+     * 为什么不在 App 进程干：现在 UI 跑在游戏进程里，游戏进程读不到 App 的 assets，
+     * 只能自己去翻 APK（base.apk 是 0644，任何 uid 都能读）。
+     */
+    static String prepareFonts(Context ctx) {
+        File outDir = new File(GAME_FILES, "fonts");
+        if (!outDir.exists()) outDir.mkdirs();
+        File latin = new File(outDir, "latin.ttf");
+        File cjk = new File(outDir, "cjk.ttf");
+
+        try {
+            if (!latin.exists() || latin.length() < 1000) extractAsset(ctx, "fonts/Nunito-Regular.ttf", latin);
+            if (!cjk.exists() || cjk.length() < 10000)  extractAsset(ctx, "fonts/cjk.ttf", cjk);
+            latinFontPath = latin.getAbsolutePath();
+            cjkFontPath = cjk.getAbsolutePath();
+            fontsReady = true;
+            return latin.length() + "/" + cjk.length();
+        } catch (Throwable t) {
+            fontsReady = false;
+            return "失败: " + t;
+        }
+    }
+
+    static void extractAsset(Context ctx, String assetName, File dst) throws Exception {
+        ApplicationInfo ai = ctx.getPackageManager()
+                .getApplicationInfo("com.moss.mmdruntime", 0);
+        ZipFile zip = new ZipFile(ai.sourceDir);
+        ZipEntry entry = zip.getEntry("assets/" + assetName);
+        if (entry == null) throw new RuntimeException("assets 里没有 " + assetName);
+        InputStream in = zip.getInputStream(entry);
+        OutputStream out = new FileOutputStream(dst);
+        try {
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        } finally {
+            try { in.close(); } catch (Throwable ignored) { }
+            try { out.close(); } catch (Throwable ignored) { }
+            try { zip.close(); } catch (Throwable ignored) { }
+        }
+        dst.setReadable(true, false);
     }
 
     static void copy(File src, File dst) throws Exception {
@@ -186,7 +263,12 @@ public class HookEntry implements IXposedHookLoadPackage {
         try { dst.setReadable(true, false); } catch (Throwable ignored) { }
     }
 
-    // ---------------- 主线程 tick ----------------
+    /** ImGui 面板状态按钮用 */
+    public static String getStatus() {
+        try { return nativeStatus(); } catch (Throwable t) { return lastStatus; }
+    }
+
+    // ================= 主线程 tick =================
 
     static void startTick() {
         if (tickHandler != null) return;

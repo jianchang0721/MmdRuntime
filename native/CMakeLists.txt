@@ -19,7 +19,6 @@ add_library(mmdruntime SHARED
     mmd/pmx.cpp
     mmd/skeleton.cpp
     mmd/mesh_builder.cpp
-    bridge/bridge.cpp
     unity/unity_objects.cpp
     game/smr_bind.cpp
     game/loader.cpp

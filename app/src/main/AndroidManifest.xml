@@ -2,11 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
           xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- 悬浮窗：ImGui 菜单画在自己的 GLSurfaceView 上，不进游戏进程 -->
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!--
+      权限说明（v1.2 之后）：
+        菜单跑在游戏进程里（hook eglSwapBuffers），不再需要
+        SYSTEM_ALERT_WINDOW / FOREGROUND_SERVICE / POST_NOTIFICATIONS。
+        桌面 App 只留「导入模型」，用系统文件选择器（SAF）拿读权限，也不需要存储权限。
+    -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+                     android:maxSdkVersion="32"/>
 
     <application
             android:label="MmdRuntime"
@@ -14,7 +17,7 @@
             android:icon="@android:drawable/sym_def_app_icon"
             android:theme="@style/Theme.Hello">
 
-        <!-- 桌面图标：导入模型 + 启动悬浮窗 -->
+        <!-- 桌面图标：导入模型 -->
         <activity
                 android:name=".MainActivity"
                 android:exported="true"
@@ -25,29 +28,9 @@
             </intent-filter>
         </activity>
 
-        <!-- 游戏启动联动：游戏侧 HookEntry 发显式广播，这里收到就拉起悬浮窗 -->
-        <receiver
-                android:name=".service.GameLaunchReceiver"
-                android:exported="true">
-            <intent-filter>
-                <action android:name="com.moss.mmdruntime.action.GAME_LAUNCHED"/>
-            </intent-filter>
-        </receiver>
-
-        <!-- ImGui 悬浮窗服务 -->
-        <service
-                android:name=".service.FloatingWindowService"
-                android:enabled="true"
-                android:exported="false"
-                android:foregroundServiceType="specialUse">
-            <property
-                    android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                    android:value="MMD model overlay menu"/>
-        </service>
-
         <!-- LSPosed 模块入口 -->
         <meta-data android:name="xposedmodule" android:value="true"/>
-        <meta-data android:name="xposeddescription" android:value="Standalone MMD runtime: PMX loader, own skeleton, ImGui overlay menu"/>
+        <meta-data android:name="xposeddescription" android:value="Standalone MMD runtime: PMX loader, own skeleton, ImGui menu drawn on the game's GL frame"/>
         <meta-data android:name="xposedminversion" android:value="93"/>
         <meta-data android:name="xposedscope" android:resource="@array/xposed_scope"/>
     </application>

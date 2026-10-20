@@ -456,11 +456,10 @@ void DrawDiagnosticTab(Bridge::BridgeModel& Model) {
         "1. LSPosed 里勾选 MmdRuntime\n"
         "2. 作用域勾选 com.hermes.h1game\n"
         "3. 杀掉游戏重进\n"
-        "4. 仍不行：Root shell 执行\n"
-        "   ls -l %s\n"
-        "   应当看到 status.conf 且修改时间在变\n"
-        "5. 看不到该文件 = 游戏侧 so 没跑起来（看 %s）",
-        BridgeConfig::StatusFilePath().c_str(), "/sdcard/MT2/log/mmdruntime.log");
+        "4. 仍然连不上：面板上方写着「游戏侧 so 还没加载」，\n"
+        "   说明 libmmdruntime.so 没起来（壳没加载或不在 games/files 下）\n"
+        "5. 日志（需要 root 才能看）：%s",
+        "/data/data/com.hermes.h1game/files/mmdruntime.log");
     ImGui::PopStyleColor();
 }
 
@@ -516,8 +515,9 @@ void DrawSettingsTab(Bridge::BridgeModel& Model) {
     ImGui::Spacing();
 
     ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::TextSecondary);
-    ImGui::TextWrapped("Bridge 目录 %s\nui.conf（UI→游戏）  status.conf（游戏→UI）",
-                       BridgeConfig::BRIDGE_DIRECTORY);
+    ImGui::TextWrapped("连接方式：同进程直调 mmd_get_api()（无文件、无 root）\n"
+                       "状态：%s",
+                       Bridge::Connected() ? "已直连游戏侧 so" : "未连上（等游戏侧 so 加载）");
     ImGui::PopStyleColor();
 }
 

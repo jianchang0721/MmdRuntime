@@ -1,21 +1,24 @@
 #include "Bridge.h"
 
 #include <dirent.h>
+#include <dlfcn.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 
 #include "AppState.h"
+#include "elf_util.h"   // host/elf_util.h
+#include "mmd_api.h"    // native/public/mmd_api.h
 
 namespace Bridge {
 
 static BridgeModel g_Model;
-static BridgeConfig::KeyValueTable g_UiConfig;
-static int64_t g_LastStatusRead = 0;
+static const MmdApi* g_Api = nullptr;
+static int64_t g_LastBindTry = 0;
 
 BridgeModel& Shared() { return g_Model; }
 
@@ -25,71 +28,91 @@ static int64_t NowMs() {
         .count();
 }
 
-void EnsureDirectory() {
-    mkdir(BridgeConfig::BRIDGE_DIRECTORY, 0777);
-    ::chmod(BridgeConfig::BRIDGE_DIRECTORY, 0777);
-}
-
 // ------------------------------------------------------------------
-// UI -> Game：把内存里的最新值一次性刷进 ui.conf
+// 绑定 mmd_get_api
+//
+// 不能用 dlopen("libmmdruntime.so", RTLD_NOLOAD)：HookEntry 为了让同一个
+// so 能重复加载，会把它复制成 libmmdruntime_1.so / _2.so…… 然后 System.load
+// 绝对路径。dlopen 按 soname 找会直接错过。
+//
+// 所以走跟游戏侧同一套：/proc/self/maps 找基址 + 手工解析 .dynsym。
 // ------------------------------------------------------------------
-void FlushUiConfig() {
-    EnsureDirectory();
-    BridgeModel& model = Shared();
+bool Bind() {
+    if (g_Api) return true;
 
-    g_UiConfig.SetBool("enable_replace", model.enableReplace);
-    g_UiConfig.SetFloat("model_scale", model.modelScale);
-    g_UiConfig.Set("model_path", model.modelPath);
-    g_UiConfig.SetBool("show_bounds", model.showBounds);
-    g_UiConfig.SetFloat("offset_x", model.offsetX);
-    g_UiConfig.SetFloat("offset_y", model.offsetY);
-    g_UiConfig.SetFloat("offset_z", model.offsetZ);
-    g_UiConfig.Set("active_model",
-                   model.models.empty() ? "" : model.models[model.selectedModel]);
+    const int64_t now = NowMs();
+    if (now - g_LastBindTry < 1000) return false;
+    g_LastBindTry = now;
 
-    // 命令：写完由 UI 侧清除标记，Game 下次轮询看到即为一次请求
-    if (!model.pendingCommand.empty()) {
-        g_UiConfig.Set("cmd." + model.pendingCommand, "1");
-        model.pendingCommand.clear();
+    uintptr_t base = elfu::MapsBase("libmmdruntime");
+    if (!base) {
+        g_LastConfigStatus = "游戏侧 so 还没加载";
+        return false;
+    }
+    uintptr_t sym = elfu::ElfSym(base, "mmd_get_api");
+    if (!sym) {
+        g_LastConfigStatus = "找不到 mmd_get_api";
+        return false;
+    }
+    auto fn = (const MmdApi* (*)(void))sym;
+    const MmdApi* api = fn();
+    if (!api || api->apiVersion != MMD_API_VERSION || api->structSize != (int)sizeof(MmdApi)) {
+        g_LastConfigStatus = "API 版本不匹配";
+        return false;
     }
 
-    g_UiConfig.Set("version", std::to_string(g_UiConfig.GetBumpVersion()));
-    g_UiConfig.SetInt("write_time_ms", (int)NowMs());
-
-    const bool ok = g_UiConfig.SaveToFile(BridgeConfig::UiFilePath());
-    ::chmod(BridgeConfig::UiFilePath().c_str(), 0666);
-    model.lastWriteMs = NowMs();
-    g_LastConfigStatus = ok ? "Bridge write ok" : "Bridge write failed";
+    g_Api = api;
+    g_LastConfigStatus = "已直连游戏侧";
+    if (api->log) api->log("UI bound via mmd_get_api");
+    return true;
 }
 
+bool Connected() { return g_Api != nullptr; }
+
 // ------------------------------------------------------------------
-// Game -> UI：mtime 变了才重新解析
+// 拉状态
 // ------------------------------------------------------------------
 void PollStatus() {
-    EnsureDirectory();
-    struct stat info {};
-    if (::stat(BridgeConfig::StatusFilePath().c_str(), &info) != 0) return;
-    const int64_t mtime = (int64_t)info.st_mtim.tv_sec * 1000 + info.st_mtim.tv_nsec / 1000000;
-    if (mtime == g_LastStatusRead) return;
-    g_LastStatusRead = mtime;
+    if (!Bind()) {
+        BridgeModel& m = Shared();
+        m.state = GameState::Unknown;
+        m.statusMessage = g_LastConfigStatus;
+        return;
+    }
 
-    BridgeConfig::KeyValueTable loaded;
-    if (!loaded.LoadFromFile(BridgeConfig::StatusFilePath())) return;
+    MmdStatus st;
+    g_Api->get_status(&st);
 
-    BridgeModel& model = Shared();
-    model.state = ParseGameState(loaded.GetString("game_state", "unknown"));
-    model.statusMessage = loaded.GetString("status_message", "等待启动…");
-    model.gameVersion = loaded.GetString("game_version", "unknown");
-    model.activeModel = loaded.GetString("active_model", "无");
-    model.lastResult = loaded.GetInt("last_result", 0);
-    model.lastErrorCode = loaded.GetInt("last_error_code", 0);
-    model.lastErrorMessage = loaded.GetString("last_error_message");
-    model.smrTotal = loaded.GetInt("smr_total", 0);
-    model.smrReplaced = loaded.GetInt("smr_replaced", 0);
-    model.boneCount = loaded.GetInt("bone_count", 0);
-    model.vertexCount = loaded.GetInt("vertex_count", 0);
-    model.replaceProgress = loaded.GetFloat("replace_progress", 0.0f);
-    model.lastReadMs = NowMs();
+    BridgeModel& m = Shared();
+    switch (st.gameState) {
+        case MMD_GS_DETACHED: m.state = GameState::Detached;  break;
+        case MMD_GS_ATTACHED: m.state = GameState::Attached;  break;
+        case MMD_GS_LOADING:  m.state = GameState::Loading;   break;
+        case MMD_GS_ACTIVE:   m.state = GameState::Active;    break;
+        case MMD_GS_ERROR:    m.state = GameState::ErrorState;break;
+        default:              m.state = GameState::Unknown;   break;
+    }
+    m.statusMessage      = st.statusMessage[0] ? st.statusMessage : "等待游戏侧 so…";
+    m.activeModel        = st.activeModel[0] ? st.activeModel : "无";
+    m.lastResult         = st.lastResult;
+    m.smrTotal           = st.smrTotal;
+    m.smrReplaced        = st.smrReplaced;
+    m.boneCount          = st.boneCount;
+    m.vertexCount        = st.vertexCount;
+    m.replaceProgress    = (float)st.progress / 100.0f;
+    m.lastErrorCode      = st.lastResult == 0 ? 1 : 0;
+    m.lastErrorMessage   = st.lastError;
+    m.lastReadMs         = NowMs();
+
+    // 回读开关，UI 上滑条/开关跟游戏侧保持一致
+    m.enableReplace      = st.enableReplace != 0;
+    if (st.modelScale > 0.0f) m.modelScale = st.modelScale;
+    (void)st.statusVersion;
+    (void)st.uptimeMs;
+    (void)st.stage;
+    (void)st.triCount;
+    (void)st.pmxPath;
+    (void)st.logPath;
 }
 
 // ------------------------------------------------------------------
@@ -125,26 +148,36 @@ void RefreshModelList() {
 }
 
 // ------------------------------------------------------------------
-// setters
+// setters —— 本地记一份，同时直接喂给游戏侧
 // ------------------------------------------------------------------
-bool SetStorageDir(const std::string& path) {
+void SetStorageDir(const std::string& path) {
     Shared().storageDir = path;
     RefreshModelList();
-    FlushUiConfig();
-    return true;
 }
 
-void SetEnableReplace(bool value) { Shared().enableReplace = value; FlushUiConfig(); }
-void SetModelScale(float value) { Shared().modelScale = value; FlushUiConfig(); }
-void SetModelPath(const std::string& value) { Shared().modelPath = value; FlushUiConfig(); }
-void SetShowBounds(bool value) { Shared().showBounds = value; FlushUiConfig(); }
+void SetEnableReplace(bool value) {
+    Shared().enableReplace = value;
+    Shared().lastWriteMs = NowMs();
+    if (Bind()) g_Api->set_enable(value ? 1 : 0);
+}
+
+void SetModelScale(float value) {
+    Shared().modelScale = value;
+    Shared().lastWriteMs = NowMs();
+    if (Bind()) g_Api->set_scale(value);
+}
+
+void SetModelPath(const std::string& value) {
+    Shared().modelPath = value;
+}
+
+void SetShowBounds(bool value) { Shared().showBounds = value; }
 
 void SetManualOffset(float x, float y, float z) {
     BridgeModel& model = Shared();
     model.offsetX = x;
     model.offsetY = y;
     model.offsetZ = z;
-    FlushUiConfig();
 }
 
 void SelectModel(const std::string& name) {
@@ -155,19 +188,24 @@ void SelectModel(const std::string& name) {
             model.modelPath = model.storageDir + "/" + name;
         }
     }
-    FlushUiConfig();
+    model.lastWriteMs = NowMs();
+    // 游戏侧按「目录名」在自己私有目录 models/<名字> 里递归找 pmx
+    if (Bind()) g_Api->set_model(name.c_str());
 }
 
-void RequestRescan() { Shared().pendingCommand = "rescan"; FlushUiConfig(); }
-void RequestReapply() { Shared().pendingCommand = "reapply"; FlushUiConfig(); }
+void RequestRescan() {
+    Shared().pendingCommand = "rescan";
+    if (Bind()) g_Api->cmd_rescan();
+}
+
+void RequestReapply() {
+    Shared().pendingCommand = "reapply";
+    if (Bind()) g_Api->cmd_reapply();
+}
 
 void ImportModelsFromConfig() {
-    BridgeConfig::KeyValueTable loaded;
-    if (loaded.LoadFromFile(BridgeConfig::UiFilePath())) {
-        const std::string path = loaded.GetString("model_path", "");
-        if (!path.empty()) Shared().modelPath = path;
-    }
     RefreshModelList();
+    if (Bind()) g_Api->log("model list refreshed");
 }
 
 }  // namespace Bridge

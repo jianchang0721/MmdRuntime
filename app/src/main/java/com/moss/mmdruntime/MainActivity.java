@@ -16,8 +16,6 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import com.moss.mmdruntime.service.FloatingWindowService;
-
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -40,7 +38,6 @@ public class MainActivity extends Activity {
     static final String MODELS_DIR  = GAME_FILES + "/models";
     static final String ACTIVE_FILE = GAME_FILES + "/mmdrt_active.txt";
     static final int REQ_TREE = 1001;
-    static final int REQ_OVERLAY = 1002;
 
     TextView logView;
     ScrollView scroller;
@@ -71,7 +68,7 @@ public class MainActivity extends Activity {
         sub.setGravity(Gravity.CENTER);
         root.addView(sub, lp(-1, -2, 0, 0, 0, dp(16)));
 
-        overlayBtn = mkButton("① 打开悬浮菜单");
+        overlayBtn = mkButton("① 菜单在游戏里（点我看说明）");
         overlayBtn.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { toggleOverlay(); }
         });
@@ -90,8 +87,8 @@ public class MainActivity extends Activity {
         root.addView(authBtn, lp(-1, -2, 0, 0, 0, dp(14)));
 
         TextView tip = new TextView(this);
-        tip.setText("悬浮菜单画在本 App 自己的窗口上，不碰游戏进程 —— 游戏不会因为菜单崩。\n"
-                  + "首次点「打开悬浮菜单」会要求「显示在其他应用上层」权限。\n"
+        tip.setText("菜单现在直接画在游戏画面里（hook eglSwapBuffers），启动游戏就出现，不用先开这个 App。\n"
+                  + "面板挡着游戏就点右上角 X 收成小条，点小条再展开。\n"
                   + "导入模型时 KernelSU 会弹 root 授权，点允许。");
         tip.setTextColor(0xFF667088);
         tip.setTextSize(10);
@@ -113,9 +110,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (Settings.canDrawOverlays(this) && overlayBtn != null) {
-            overlayBtn.setText("① 打开悬浮菜单");
-        }
     }
 
     // ---------------- UI 小工具 ----------------
@@ -150,37 +144,12 @@ public class MainActivity extends Activity {
         });
     }
 
-    // ---------------- 悬浮窗 ----------------
+    // ---------------- 菜单说明 ----------------
 
     void toggleOverlay() {
-        if (!Settings.canDrawOverlays(this)) {
-            log("需要「显示在其他应用上层」权限，正在跳转设置…");
-            try {
-                Intent i = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:" + getPackageName()));
-                startActivityForResult(i, REQ_OVERLAY);
-            } catch (Throwable t) {
-                log("跳转失败: " + t);
-            }
-            return;
-        }
-        startOverlayService();
-    }
-
-    void startOverlayService() {
-        try {
-            Intent i = new Intent(this, FloatingWindowService.class);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
-            else startService(i);
-            log("悬浮菜单已启动（通知栏有常驻通知）");
-            // 回到桌面，方便看到菜单浮在上面
-            Intent home = new Intent(Intent.ACTION_MAIN);
-            home.addCategory(Intent.CATEGORY_HOME);
-            home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(home);
-        } catch (Throwable t) {
-            log("启动悬浮窗失败: " + t);
-        }
+        log("菜单在游戏里：LSPosed 勾上作用域后直接开游戏，面板自动画在游戏画面上。\n"
+          + "面板右上角 X = 收成小条；点小条再展开。\n"
+          + "这个 App 只负责导入模型，不用提前启动。");
     }
 
     // ---------------- 选文件夹 ----------------
@@ -198,11 +167,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
-        if (req == REQ_OVERLAY) {
-            if (Settings.canDrawOverlays(this)) startOverlayService();
-            else log("权限没给，悬浮菜单开不了");
-            return;
-        }
         if (req != REQ_TREE || res != RESULT_OK || data == null || data.getData() == null) return;
         final Uri tree = data.getData();
         log("选中: " + tree);

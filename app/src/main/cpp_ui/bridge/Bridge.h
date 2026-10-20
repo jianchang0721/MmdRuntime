@@ -4,16 +4,16 @@
 #include <string>
 #include <vector>
 
-#include "BridgeConfig.h"
-
 // =====================================================================
-// UI 侧的 UI/Game 桥
+// UI 侧的数据源（原来叫 Bridge，是读文件；现在直连 mmd_get_api）
 //
-// 设计要点（血泪史）：
-//   1. 所有 set 都先落在内存结构体 Shared() 上，再统一 Flush 到文件。
-//      绝不一改就写一次盘 —— 拖滑条时会几十次重写入。
-//   2. 写盘用 rename 原子替换，读侧永远不会看到半截文件。
-//   3. 命令（rescan / reapply）走 cmd.xxx 通道，Game 读完自行清除。
+// 名字保留是因为 Screens.cpp 一大堆地方调 Bridge::xxx，接口形状不动，
+// 只把内部实现换成「同进程直调 libmmdruntime.so 导出的函数表」。
+//
+// 好处（对比之前的文件通道）：
+//   · 零延迟：setter 直接改游戏侧内存里的命令位
+//   · 没有 SELinux / 目录权限 / stopped state 这些幺蛾子
+//   · 不需要 root 建 /data/local/tmp/mmdrt
 // =====================================================================
 
 namespace Bridge {
@@ -29,28 +29,17 @@ enum class GameState {
 
 inline const char* GameStateName(GameState state) {
     switch (state) {
-        case GameState::Unknown:    return "unknown";
-        case GameState::Detached:   return "detached";
-        case GameState::Attached:   return "attached";
-        case GameState::Loading:    return "loading";
-        case GameState::Active:     return "active";
-        case GameState::ErrorState: return "error";
+        case GameState::Unknown:    return "等待连接";
+        case GameState::Detached:   return "未就绪";
+        case GameState::Attached:   return "已连接";
+        case GameState::Loading:    return "加载中";
+        case GameState::Active:     return "生效中";
+        case GameState::ErrorState: return "出错";
     }
-    return "unknown";
+    return "未知";
 }
 
-inline GameState ParseGameState(const std::string& raw) {
-    if (raw == "attached") return GameState::Attached;
-    if (raw == "loading")  return GameState::Loading;
-    if (raw == "active")   return GameState::Active;
-    if (raw == "error")    return GameState::ErrorState;
-    if (raw == "detached") return GameState::Detached;
-    return GameState::Unknown;
-}
-
-// =====================================================================
-// UI 侧的唯一数据源
-// =====================================================================
+// UI 侧唯一数据源。字段语义跟旧版一致，Screens.cpp 直接读。
 struct BridgeModel {
     // ---- UI -> Game ----
     bool  enableReplace = false;
@@ -64,10 +53,10 @@ struct BridgeModel {
 
     // ---- Game -> UI ----
     GameState state = GameState::Unknown;
-    std::string statusMessage = "等待启动…";
-    std::string gameVersion = "unknown";
+    std::string statusMessage = "等待游戏侧 so…";
+    std::string gameVersion = "libmmdruntime";
     std::string activeModel = "无";
-    int lastResult = 0;
+    int lastResult = -1;
     int lastErrorCode = 0;
     std::string lastErrorMessage;
     int smrTotal = 0;
@@ -86,12 +75,17 @@ struct BridgeModel {
 
 BridgeModel& Shared();
 
-void EnsureDirectory();
-void FlushUiConfig();
+// 绑定 libmmdruntime.so 的 mmd_get_api()。幂等，内部限速每秒重试一次。
+bool Bind();
+bool Connected();
+
+// 从 mmd_get_api 拉一次状态填进 Shared()。每帧调都行。
 void PollStatus();
+
+// 扫本地模型目录（/sdcard 下），填 models 列表
 void RefreshModelList();
 
-bool SetStorageDir(const std::string& path);
+void SetStorageDir(const std::string& path);
 void SetEnableReplace(bool value);
 void SetModelScale(float value);
 void SetModelPath(const std::string& value);

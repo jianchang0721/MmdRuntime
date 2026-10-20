@@ -32,7 +32,7 @@
 
 #include "mmd/pmx.h"
 #include "bone_hook.h"
-#include "bridge/bridge.h"
+#include "public/mmd_api.h"
 #include "game/loader.h"
 #include <dirent.h>
 #include <strings.h>
@@ -688,8 +688,6 @@ static void probe_bones_layout() {
 // =====================================================================
 // tick 状态机
 // =====================================================================
-static void bridge_log_bridge(const char* msg) { L("[BRIDGE] %s", msg); }
-
 static long long now_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -719,8 +717,22 @@ static long long g_t0 = 0;
 static int       g_ticks = 0;
 static char      g_status[256] = "init";
 
-static bridge::UiConfig  g_ui;         // 最近一次读到的 UI 配置
-static bool              g_hasUi = false;
+// ---- UI 下发的配置（mmd_get_api 的 setter 写进来，tick 消费）----
+struct UiCmd {
+    int   enableReplace = 0;
+    float modelScale    = 1.0f;
+    char  activeModel[160] = {0};
+    int   cmdRescan  = 0;
+    int   cmdReapply = 0;
+    int   cmdUnload  = 0;
+};
+
+static pthread_mutex_t g_cfgMtx  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_statMtx = PTHREAD_MUTEX_INITIALIZER;
+static UiCmd     g_ui;
+static bool      g_hasUi = false;
+static MmdStatus g_stat;      // 最近一帧的状态快照（给 mmd_get_api 读）
+static int       g_statVer = 0;
 static game::LoadResult  g_load;       // 最近一次加载结果
 static mmd::Model        g_model;      // 解析出来的模型（常驻，别重复解析）
 static bool              g_modelLoaded = false;
@@ -840,29 +852,54 @@ static bool do_load_model() {
     return true;
 }
 
-// ---- 状态回写 UI ----
-static void write_status(bool force) {
-    bridge::GameStatus st;
+// ---- 刷新状态快照（每帧末尾调一次，开销就是 1KB memset + 4 个 snprintf）----
+static void refresh_status() {
+    pthread_mutex_lock(&g_cfgMtx);
+    UiCmd ui = g_ui;
+    bool  hasUi = g_hasUi;
+    pthread_mutex_unlock(&g_cfgMtx);
+
+    MmdStatus s;
+    memset(&s, 0, sizeof(s));
+    s.apiVersion = MMD_API_VERSION;
+    s.stage      = (int)g_stage;
     switch (g_stage) {
         case ST_WAIT:
         case ST_BIND:
-        case ST_CLASSES: st.gameState = "detached"; break;
+        case ST_CLASSES: s.gameState = MMD_GS_DETACHED; break;
         case ST_SCAN:
-        case ST_IDLE:    st.gameState = "attached"; break;
-        case ST_LOAD:    st.gameState = "loading";  break;
-        case ST_ACTIVE:  st.gameState = "active";   break;
-        default:         st.gameState = "unknown";  break;
+        case ST_IDLE:    s.gameState = MMD_GS_ATTACHED; break;
+        case ST_LOAD:    s.gameState = MMD_GS_LOADING;  break;
+        case ST_ACTIVE:  s.gameState = MMD_GS_ACTIVE;   break;
+        default:         s.gameState = MMD_GS_UNKNOWN;  break;
     }
-    st.statusMessage   = g_status;
-    st.activeModel     = (g_hasUi && g_ui.activeModel[0]) ? g_ui.activeModel : "";
-    st.smrTotal        = (int)g_smrs.size();
-    st.smrReplaced     = g_load.ok ? 1 : 0;
-    st.boneCount       = g_load.ok ? g_load.bonesBuilt : 0;
-    st.vertexCount     = g_load.ok ? g_load.verts : 0;
-    st.replaceProgress = g_load.ok ? 1.0f : 0.0f;
-    st.lastResult      = g_load.ok ? 1 : 0;
-    st.lastError       = g_load.ok ? "" : g_load.error;
-    bridge::writeStatus(st, force);
+    snprintf(s.statusMessage, sizeof(s.statusMessage), "%s", g_status);
+    snprintf(s.activeModel,   sizeof(s.activeModel),   "%s", hasUi ? ui.activeModel : "");
+    snprintf(s.lastError,     sizeof(s.lastError),     "%s", g_load.ok ? "" : g_load.error);
+    snprintf(s.logPath,       sizeof(s.logPath),       "%s/mmdruntime.log", g_dir.c_str());
+    s.smrTotal     = (int)g_smrs.size();
+    s.smrReplaced  = g_load.ok ? 1 : 0;
+    s.boneCount    = g_load.ok ? g_load.bonesBuilt : 0;
+    s.vertexCount  = g_load.ok ? g_load.verts : 0;
+    s.triCount     = g_load.ok ? g_load.tris : 0;
+    s.progress     = g_load.ok ? 100 : (g_stage == ST_LOAD ? 50 : 0);
+    s.lastResult   = g_load.ok ? 1 : (g_load.error[0] ? 0 : -1);
+    s.enableReplace= hasUi ? ui.enableReplace : 0;
+    s.modelScale   = hasUi ? ui.modelScale : 1.0f;
+    s.uptimeMs     = g_t0 ? (now_ms() - g_t0) : 0;
+
+    pthread_mutex_lock(&g_statMtx);
+    MmdStatus prev = g_stat;
+    prev.statusVersion = 0;
+    s.statusVersion    = 0;
+    long long keepMs   = s.uptimeMs;
+    s.uptimeMs         = 0;
+    prev.uptimeMs      = 0;
+    if (memcmp(&prev, &s, sizeof(MmdStatus)) != 0) g_statVer++;   // 内容真变了才 +1
+    s.uptimeMs      = keepMs;
+    s.statusVersion = g_statVer;
+    g_stat = s;
+    pthread_mutex_unlock(&g_statMtx);
 }
 
 extern "C" void native_tick() {
@@ -884,7 +921,6 @@ extern "C" void native_tick() {
         lastTry = now_ms();
         tries++;
         if (bind_api()) {
-            bridge::setLogger(bridge_log_bridge);
             L("[IL2CPP] bound after %d tries", tries);
             run_parse_test();
             snprintf(g_status, sizeof(g_status), "il2cpp bound (%d tries)", tries);
@@ -928,7 +964,6 @@ extern "C" void native_tick() {
             dump_smrs();
             snprintf(g_status, sizeof(g_status), "ready (%zu SMR)", g_smrs.size());
             g_stage = ST_IDLE;
-            write_status(true);
         } else if (scans >= 300) {
             snprintf(g_status, sizeof(g_status), "no SMR after %d scans", scans);
             g_stage = ST_IDLE;
@@ -942,46 +977,47 @@ extern "C" void native_tick() {
         {
             static long long lastBeat = 0;
             static int beats = 0;
-            if (now_ms() - lastBeat > 2000) {
+            if (now_ms() - lastBeat > 5000) {
                 lastBeat = now_ms();
                 beats++;
-                L("[IDLE] beat #%d hasUi=%d enable=%d model='%s' loadOk=%d",
-                  beats, (int)g_hasUi, g_hasUi ? (int)g_ui.enableReplace : -1,
-                  g_hasUi ? g_ui.activeModel : "", (int)g_load.ok);
+                pthread_mutex_lock(&g_cfgMtx);
+                bool hasUi = g_hasUi;
+                int  en    = g_ui.enableReplace;
+                char md[160];
+                snprintf(md, sizeof(md), "%s", g_ui.activeModel);
+                pthread_mutex_unlock(&g_cfgMtx);
+                L("[IDLE] beat #%d statVer=%d hasUi=%d enable=%d model='%s' loadOk=%d",
+                  beats, g_statVer, (int)hasUi, hasUi ? en : -1, md, (int)g_load.ok);
             }
         }
-        // 轮询 UI
-        bridge::UiConfig cfg;
-        if (bridge::poll(cfg)) {
-            g_ui = cfg;
-            g_hasUi = true;
-        }
 
-        // 命令：重扫
-        if (g_hasUi && g_ui.cmdRescan) {
-            g_ui.cmdRescan = false;
+        // 取命令（API 侧置位，这里消费）
+        pthread_mutex_lock(&g_cfgMtx);
+        bool rescan  = g_ui.cmdRescan  != 0;
+        bool reapply = g_ui.cmdReapply != 0;
+        bool want    = g_hasUi && g_ui.enableReplace;
+        g_ui.cmdRescan  = 0;
+        g_ui.cmdReapply = 0;
+        pthread_mutex_unlock(&g_cfgMtx);
+
+        if (rescan) {
             g_smrs.clear();
             snprintf(g_status, sizeof(g_status), "rescan requested");
             g_stage = ST_SCAN;
             break;
         }
 
-        // 命令：重新套用（或者第一次打开 enable_replace）
-        bool want = g_hasUi && g_ui.enableReplace;
-        bool need = g_hasUi && (g_ui.cmdReapply || (want && !g_load.ok));
-        if (need) {
-            g_ui.cmdReapply = false;
+        // 重新套用（或者第一次打开总开关）
+        if (reapply || (want && !g_load.ok)) {
             g_stage = ST_LOAD;
             break;
         }
 
-        write_status(false);
         break;
     }
 
     case ST_LOAD: {
         snprintf(g_status, sizeof(g_status), "loading model");
-        write_status(true);
         bool ok = do_load_model();
         if (ok) {
             snprintf(g_status, sizeof(g_status), "model active: %s",
@@ -992,34 +1028,153 @@ extern "C" void native_tick() {
             g_stage = ST_IDLE;
             g_modelLoaded = false;   // 允许下次重新解析
         }
-        write_status(true);
         break;
     }
 
     case ST_ACTIVE: {
-        // 保持状态回报；UI 关掉总开关时回到 IDLE（暂不还原模型）
-        bridge::UiConfig cfg;
-        if (bridge::poll(cfg)) {
-            g_ui = cfg;
-            g_hasUi = true;
-        }
-        if (g_hasUi && !g_ui.enableReplace) {
+        // UI 关总开关 / 发命令时处理（还原模型还没接，先回 IDLE）
+        pthread_mutex_lock(&g_cfgMtx);
+        bool rescan  = g_ui.cmdRescan  != 0;
+        bool reapply = g_ui.cmdReapply != 0;
+        bool unload  = g_ui.cmdUnload  != 0;
+        bool en      = g_hasUi && g_ui.enableReplace != 0;
+        g_ui.cmdRescan  = 0;
+        g_ui.cmdReapply = 0;
+        g_ui.cmdUnload  = 0;
+        pthread_mutex_unlock(&g_cfgMtx);
+
+        if (unload) {
+            snprintf(g_status, sizeof(g_status), "unload requested (stub)");
+            g_stage = ST_IDLE;
+        } else if (!en) {
             snprintf(g_status, sizeof(g_status), "disabled by ui");
             g_stage = ST_IDLE;
-        } else if (g_hasUi && (g_ui.cmdReapply || g_ui.cmdRescan)) {
-            g_ui.cmdReapply = false;
-            g_ui.cmdRescan = false;
+        } else if (rescan) {
+            g_smrs.clear();
+            g_stage = ST_SCAN;
+        } else if (reapply) {
             g_stage = ST_LOAD;
         }
-        write_status(false);
         break;
     }
     }
+
+    refresh_status();   // 状态快照每帧刷一次，UI 侧随时能读
+}
+
+// =====================================================================
+// 对外导出：mmd_get_api()
+//
+// libimgui_overlay.so 在同进程里用 maps_base + elf_sym 拿到 mmd_get_api
+// 然后直接调。不走文件、不走 binder，零延迟。
+// =====================================================================
+static void api_get_status(MmdStatus* out) {
+    if (!out) return;
+    pthread_mutex_lock(&g_statMtx);
+    *out = g_stat;
+    pthread_mutex_unlock(&g_statMtx);
+    if (out->apiVersion == 0) {          // tick 还没跑过，给个干净的默认值
+        memset(out, 0, sizeof(*out));
+        out->apiVersion  = MMD_API_VERSION;
+        out->lastResult  = -1;
+        out->modelScale  = 1.0f;
+        snprintf(out->logPath, sizeof(out->logPath), "%s/mmdruntime.log", g_dir.c_str());
+    }
+}
+
+static void api_set_enable(int on) {
+    pthread_mutex_lock(&g_cfgMtx);
+    g_ui.enableReplace = on ? 1 : 0;
+    g_hasUi = true;
+    pthread_mutex_unlock(&g_cfgMtx);
+    L("[API] set_enable(%d)", on ? 1 : 0);
+}
+
+static void api_set_model(const char* name) {
+    pthread_mutex_lock(&g_cfgMtx);
+    snprintf(g_ui.activeModel, sizeof(g_ui.activeModel), "%s", name ? name : "");
+    g_hasUi = true;
+    pthread_mutex_unlock(&g_cfgMtx);
+    L("[API] set_model('%s')", name ? name : "");
+}
+
+static void api_set_scale(float s) {
+    if (!(s > 0.0f)) s = 1.0f;
+    pthread_mutex_lock(&g_cfgMtx);
+    g_ui.modelScale = s;
+    pthread_mutex_unlock(&g_cfgMtx);
+}
+
+static void api_cmd_rescan() {
+    pthread_mutex_lock(&g_cfgMtx);
+    g_ui.cmdRescan = 1;
+    g_hasUi = true;
+    pthread_mutex_unlock(&g_cfgMtx);
+    L("[API] cmd_rescan");
+}
+
+static void api_cmd_reapply() {
+    pthread_mutex_lock(&g_cfgMtx);
+    g_ui.cmdReapply = 1;
+    g_hasUi = true;
+    pthread_mutex_unlock(&g_cfgMtx);
+    L("[API] cmd_reapply");
+}
+
+static void api_cmd_unload() {
+    pthread_mutex_lock(&g_cfgMtx);
+    g_ui.cmdUnload = 1;
+    g_hasUi = true;
+    pthread_mutex_unlock(&g_cfgMtx);
+    L("[API] cmd_unload");
+}
+
+static void api_log(const char* msg) {
+    if (msg) L("[UI] %s", msg);
+}
+
+static const char* api_get_log_path() {
+    static char buf[512];
+    snprintf(buf, sizeof(buf), "%s/mmdruntime.log", g_dir.c_str());
+    return buf;
+}
+
+static const char* api_get_last_error() {
+    static char buf[256];
+    pthread_mutex_lock(&g_statMtx);
+    snprintf(buf, sizeof(buf), "%s", g_stat.lastError);
+    pthread_mutex_unlock(&g_statMtx);
+    return buf;
+}
+
+extern "C" __attribute__((visibility("default")))
+const MmdApi* mmd_get_api(void) {
+    static MmdApi api = {
+        (int)sizeof(MmdApi),
+        MMD_API_VERSION,
+        MMD_BUILD_TAG,
+        api_get_status,
+        api_set_enable,
+        api_set_model,
+        api_set_scale,
+        api_cmd_rescan,
+        api_cmd_reapply,
+        api_cmd_unload,
+        api_log,
+        api_get_log_path,
+        api_get_last_error,
+    };
+    static bool announced = false;
+    if (!announced) {
+        announced = true;
+        L("[API] mmd_get_api() v%d size=%zu tag=%s",
+          MMD_API_VERSION, sizeof(MmdApi), MMD_BUILD_TAG);
+    }
+    return &api;
 }
 
 // =====================================================================
 // JNI
-// =====================================================================
 extern "C" JNIEXPORT void JNICALL
 Java_com_moss_mmdruntime_HookEntry_nativeTick(JNIEnv*, jclass) {
     native_tick();
