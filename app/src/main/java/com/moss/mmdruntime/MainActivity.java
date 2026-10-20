@@ -3,18 +3,20 @@ package com.moss.mmdruntime;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.database.Cursor;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.DocumentsContract;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
-import android.widget.Toast;
+
+import com.moss.mmdruntime.service.FloatingWindowService;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -24,13 +26,12 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 
 /**
- * MmdRuntime 桌面端：模型导入。
+ * MmdRuntime 桌面端
  *
- * 用户只做两件事：点按钮 → 选模型文件夹。
- * 剩下的（递归拷贝、放对位置、改属主、写激活标记）全自动。
- *
- * 游戏 targetSdk 30 读不到 /sdcard，所以必须落到游戏私有目录，
- * 这一步要 root（KernelSU 会弹一次授权）。
+ * 三个功能：
+ *   1. 开 ImGui 悬浮窗（App 自己进程里画，不注入游戏，游戏崩不了）
+ *   2. 导入 MMD 模型文件夹（自动递归拷贝到游戏私有目录）
+ *   3. root 授权自检
  */
 public class MainActivity extends Activity {
 
@@ -39,10 +40,12 @@ public class MainActivity extends Activity {
     static final String MODELS_DIR  = GAME_FILES + "/models";
     static final String ACTIVE_FILE = GAME_FILES + "/mmdrt_active.txt";
     static final int REQ_TREE = 1001;
+    static final int REQ_OVERLAY = 1002;
 
     TextView logView;
     ScrollView scroller;
     Button pickBtn;
+    Button overlayBtn;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -51,7 +54,7 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(0xFF101018);
-        int pad = dp(20);
+        int pad = dp(18);
         root.setPadding(pad, pad, pad, pad);
 
         TextView title = new TextView(this);
@@ -59,44 +62,44 @@ public class MainActivity extends Activity {
         title.setTextColor(0xFFB388FF);
         title.setTextSize(22);
         title.setGravity(Gravity.CENTER);
-        root.addView(title, lp(-1, -2, 0, 0, 0, dp(4)));
+        root.addView(title, lp(-1, -2, 0, 0, 0, dp(2)));
 
         TextView sub = new TextView(this);
-        sub.setText("MMD 模型导入");
+        sub.setText("MMD 运行时 · ImGui 悬浮菜单");
         sub.setTextColor(0xFF8890A8);
-        sub.setTextSize(12);
+        sub.setTextSize(11);
         sub.setGravity(Gravity.CENTER);
-        root.addView(sub, lp(-1, -2, 0, 0, 0, dp(20)));
+        root.addView(sub, lp(-1, -2, 0, 0, 0, dp(16)));
 
-        pickBtn = mkButton("① 选择模型文件夹");
+        overlayBtn = mkButton("① 打开悬浮菜单");
+        overlayBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { toggleOverlay(); }
+        });
+        root.addView(overlayBtn, lp(-1, -2, 0, 0, 0, dp(8)));
+
+        pickBtn = mkButton("② 导入模型文件夹");
         pickBtn.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { pickFolder(); }
         });
-        root.addView(pickBtn, lp(-1, -2, 0, 0, 0, dp(10)));
+        root.addView(pickBtn, lp(-1, -2, 0, 0, 0, dp(8)));
 
-        Button listBtn = mkButton("② 查看已导入");
-        listBtn.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { listModels(); }
-        });
-        root.addView(listBtn, lp(-1, -2, 0, 0, 0, dp(16)));
-
-        Button authBtn = mkButton("检查 root 授权");
+        Button authBtn = mkButton("③ root 授权检查");
         authBtn.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { checkRoot(); }
         });
-        root.addView(authBtn, lp(-1, -2, 0, 0, 0, dp(10)));
+        root.addView(authBtn, lp(-1, -2, 0, 0, 0, dp(14)));
 
         TextView tip = new TextView(this);
-        tip.setText("第一次导入或检查授权时，KernelSU 会弹窗询问是否给 MmdRuntime root 权限 —— 点允许。"
-                  + "如果没弹窗，打开 KernelSU 管理器 → 应用列表 → MmdRuntime → 允许。\n"
-                  + "模型文件夹里放 .pmx 和它的贴图（保持原来相对路径），导入后进游戏自动生效。");
+        tip.setText("悬浮菜单画在本 App 自己的窗口上，不碰游戏进程 —— 游戏不会因为菜单崩。\n"
+                  + "首次点「打开悬浮菜单」会要求「显示在其他应用上层」权限。\n"
+                  + "导入模型时 KernelSU 会弹 root 授权，点允许。");
         tip.setTextColor(0xFF667088);
-        tip.setTextSize(11);
-        root.addView(tip, lp(-1, -2, 0, 0, 0, dp(16)));
+        tip.setTextSize(10);
+        root.addView(tip, lp(-1, -2, 0, 0, 0, dp(12)));
 
         logView = new TextView(this);
         logView.setTextColor(0xFF7FD4FF);
-        logView.setTextSize(11);
+        logView.setTextSize(10);
         logView.setTextIsSelectable(true);
         logView.setText("就绪。");
 
@@ -105,6 +108,14 @@ public class MainActivity extends Activity {
         root.addView(scroller, lp(-1, 0, 0, 0, 0, 0));
 
         setContentView(root);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (Settings.canDrawOverlays(this) && overlayBtn != null) {
+            overlayBtn.setText("① 打开悬浮菜单");
+        }
     }
 
     // ---------------- UI 小工具 ----------------
@@ -122,7 +133,7 @@ public class MainActivity extends Activity {
         Button b = new Button(this);
         b.setText(text);
         b.setTextColor(0xFFD8CCFF);
-        b.setTextSize(15);
+        b.setTextSize(14);
         b.setAllCaps(false);
         GradientDrawable g = new GradientDrawable();
         g.setColor(0xFF2A1F4A);
@@ -137,6 +148,39 @@ public class MainActivity extends Activity {
         scroller.post(new Runnable() {
             @Override public void run() { scroller.fullScroll(View.FOCUS_DOWN); }
         });
+    }
+
+    // ---------------- 悬浮窗 ----------------
+
+    void toggleOverlay() {
+        if (!Settings.canDrawOverlays(this)) {
+            log("需要「显示在其他应用上层」权限，正在跳转设置…");
+            try {
+                Intent i = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getPackageName()));
+                startActivityForResult(i, REQ_OVERLAY);
+            } catch (Throwable t) {
+                log("跳转失败: " + t);
+            }
+            return;
+        }
+        startOverlayService();
+    }
+
+    void startOverlayService() {
+        try {
+            Intent i = new Intent(this, FloatingWindowService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
+            else startService(i);
+            log("悬浮菜单已启动（通知栏有常驻通知）");
+            // 回到桌面，方便看到菜单浮在上面
+            Intent home = new Intent(Intent.ACTION_MAIN);
+            home.addCategory(Intent.CATEGORY_HOME);
+            home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(home);
+        } catch (Throwable t) {
+            log("启动悬浮窗失败: " + t);
+        }
     }
 
     // ---------------- 选文件夹 ----------------
@@ -154,6 +198,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (req == REQ_OVERLAY) {
+            if (Settings.canDrawOverlays(this)) startOverlayService();
+            else log("权限没给，悬浮菜单开不了");
+            return;
+        }
         if (req != REQ_TREE || res != RESULT_OK || data == null || data.getData() == null) return;
         final Uri tree = data.getData();
         log("选中: " + tree);
@@ -163,8 +212,7 @@ public class MainActivity extends Activity {
                 try {
                     doImport(tree);
                 } catch (Throwable t) {
-                    final String msg = "导入失败: " + t;
-                    runOnUiThread(new Runnable() { @Override public void run() { log(msg); } });
+                    ui("导入失败: " + t);
                 } finally {
                     runOnUiThread(new Runnable() {
                         @Override public void run() { pickBtn.setEnabled(true); }
@@ -190,7 +238,7 @@ public class MainActivity extends Activity {
 
         int[] cnt = new int[1];
         walk(treeUri, rootDocId, stage, cnt);
-        ui("已读取 " + cnt[0] + " 个文件到临时区");
+        ui("已读取 " + cnt[0] + " 个文件");
 
         if (!hasPmx(stage)) throw new Exception("这个文件夹里没有 .pmx 文件");
 
@@ -213,12 +261,12 @@ public class MainActivity extends Activity {
         String out = su(cmd.toString());
         ui("已写入游戏目录");
         if (out != null && !out.trim().isEmpty()) ui(out.trim());
-        ui("完成。重启游戏后生效。");
+        ui("完成。进游戏后悬浮菜单里能看到这个模型。");
     }
 
     void walk(Uri treeUri, String parentDocId, File dest, int[] cnt) throws Exception {
         Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId);
-        Cursor c = getContentResolver().query(children, new String[]{
+        android.database.Cursor c = getContentResolver().query(children, new String[]{
                 DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                 DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                 DocumentsContract.Document.COLUMN_MIME_TYPE
@@ -250,9 +298,8 @@ public class MainActivity extends Activity {
 
     String queryDisplayName(Uri treeUri, String docId) {
         Uri docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId);
-        Cursor c = getContentResolver().query(docUri,
-                new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME},
-                null, null, null);
+        android.database.Cursor c = getContentResolver().query(docUri,
+                new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null);
         if (c == null) return null;
         try {
             if (c.moveToFirst()) return c.getString(0);
@@ -303,7 +350,7 @@ public class MainActivity extends Activity {
         try {
             return getPackageManager().getApplicationInfo(GAME_PKG, 0).uid;
         } catch (Throwable t) {
-            return 10123;   // 兜底，日志里会对不上但 chmod 755 通常够
+            return 10314;
         }
     }
 
@@ -319,40 +366,26 @@ public class MainActivity extends Activity {
         return sb.toString();
     }
 
-    // ---------------- root 授权 ----------------
+    // ---------------- root 检查 ----------------
 
     void checkRoot() {
         log("------ root 授权检查 ------");
         new Thread(new Runnable() {
             @Override public void run() {
                 try {
-                    String out = su("id -u; which su");
-                    if (out.contains("uid=0")) {
+                    String out = su("id -u");
+                    if (out != null && out.contains("0")) {
                         ui("✓ 已有 root，KSU 已授权本应用");
                     } else {
-                        ui("su 执行了但不是 root: " + out.trim());
+                        ui("su 执行了但不是 root: " + out);
                         ui("去 KernelSU 管理器 → MmdRuntime → 允许");
                     }
                 } catch (Throwable t) {
                     ui("✗ su 不可用: " + t.getClass().getSimpleName());
-                    ui("说明 KSU 还没授权（或没装 KSU）。");
                     ui("打开 KernelSU 管理器 → 应用列表 → MmdRuntime → 开 root。");
-                    ui("然后再点「检查 root 授权」。");
                 }
             }
         }).start();
-    }
-
-    // ---------------- 已导入列表 ----------------
-
-    void listModels() {
-        try {
-            String out = su("ls -1 '" + MODELS_DIR + "' 2>/dev/null; echo '--active--'; cat '" + ACTIVE_FILE + "' 2>/dev/null");
-            log("------ 已导入 ------");
-            log(out == null || out.trim().isEmpty() ? "(空)" : out.trim());
-        } catch (Throwable t) {
-            log("读取失败（可能没给 root）: " + t);
-        }
     }
 
     void ui(final String s) {

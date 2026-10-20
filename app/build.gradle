@@ -1,20 +1,41 @@
-plugins { id 'com.android.application' }
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
 
 android {
     namespace 'com.moss.mmdruntime'
     compileSdk 34
+    ndkVersion '25.2.9519653'
 
     defaultConfig {
         applicationId "com.moss.mmdruntime"
         minSdk 24
         targetSdk 34
-        versionCode 11
-        versionName "0.10"
+        versionCode 12
+        versionName "1.0-overlay"
+
+        externalNativeBuild {
+            cmake {
+                cppFlags '-std=c++17 -fexceptions -frtti'
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp_ui/CMakeLists.txt')
+            version '3.22.1'
+        }
     }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
     }
 
     signingConfigs {
@@ -37,4 +58,5 @@ android {
 
 dependencies {
     compileOnly project(':stubs')
+    implementation 'androidx.core:core-ktx:1.12.0'
 }
