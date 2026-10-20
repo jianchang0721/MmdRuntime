@@ -115,6 +115,9 @@ public class HookEntry implements IXposedHookLoadPackage {
                 android.content.Intent i =
                         new android.content.Intent("com.moss.mmdruntime.action.GAME_LAUNCHED");
                 i.setPackage("com.moss.mmdruntime");
+                // FLAG_INCLUDE_STOPPED_PACKAGES：App 装完没手动启动过就处于 stopped
+                // state，不带这个 flag 系统直接吞掉广播（实测 result=0 没人收）。
+                i.addFlags(android.content.Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
                 ((android.content.Context) app).sendBroadcast(i);
             }
         } catch (Throwable t) {
