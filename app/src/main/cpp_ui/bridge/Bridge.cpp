@@ -120,8 +120,33 @@ void PollStatus() {
 // ------------------------------------------------------------------
 void RefreshModelList() {
     BridgeModel& model = Shared();
-    if (model.storageDir.empty()) model.storageDir = "/sdcard/MT2/ModelMod/ngyu";
     model.models.clear();
+
+    // 先问游戏侧：模型都在它自己的私有目录里，分区存储下我们读不到
+    if (Bind() && g_Api->list_models) {
+        static char buf[8192];
+        buf[0] = 0;
+        const int n = g_Api->list_models(buf, (int)sizeof(buf));
+        if (n > 0) {
+            const char* p = buf;
+            while (*p) {
+                const char* e = p;
+                while (*e && *e != '\n') e++;
+                if (e > p) model.models.emplace_back(p, (size_t)(e - p));
+                p = (*e == '\n') ? e + 1 : e;
+            }
+            std::sort(model.models.begin(), model.models.end());
+            model.storageDir = "/data/data/com.hermes.h1game/files/models";
+            if (model.selectedModel >= (int)model.models.size()) model.selectedModel = 0;
+            if (!model.models.empty() && model.modelPath.empty()) {
+                model.modelPath = model.models[model.selectedModel];
+            }
+            return;
+        }
+    }
+
+    // 退回扫 /sdcard（旧逻辑，分区存储下大概率为空）
+    if (model.storageDir.empty()) model.storageDir = "/sdcard/MT2/ModelMod/ngyu";
 
     DIR* handle = opendir(model.storageDir.c_str());
     if (!handle) return;

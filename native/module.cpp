@@ -743,6 +743,7 @@ static int       g_statVer = 0;
 static game::LoadResult  g_load;       // 最近一次加载结果
 static mmd::Model        g_model;      // 解析出来的模型（常驻，别重复解析）
 static bool              g_modelLoaded = false;
+static volatile int      g_forceReparse = 0;   // API 置位，主线程消费
 static int               g_lastSmrIndex = -1;
 
 // ---- 在目录里递归找 .pmx（最多 3 层） ----
@@ -821,6 +822,12 @@ static bool do_load_model() {
         return false;
     }
     L("[LOAD] pmx = %s", pmx.c_str());
+
+    if (g_forceReparse) {
+        g_forceReparse = 0;
+        g_modelLoaded = false;
+        L("[LOAD] 收到 reparse 请求，重新读 PMX");
+    }
 
     if (!g_modelLoaded) {
         std::string err;
@@ -1314,6 +1321,52 @@ static const char* api_get_last_error() {
     return buf;
 }
 
+// 列游戏私有目录里的模型。UI 在分区存储下读不到 /sdcard，只能问我们。
+static int api_list_models(char* out, int outSize) {
+    if (!out || outSize <= 0) return 0;
+    out[0] = 0;
+
+    const char* root = "/data/data/com.hermes.h1game/files/models";
+    DIR* d = opendir(root);
+    if (!d) { LERR("[API] list_models: %s 打不开", root); return 0; }
+
+    int n = 0, used = 0;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        const bool isDir = (e->d_type == DT_DIR);
+        const size_t len = strlen(e->d_name);
+        const bool isPmx = len > 4 && !strcasecmp(e->d_name + len - 4, ".pmx");
+        if (!isDir && !isPmx) continue;
+        if (used + (int)len + 2 > outSize) break;
+        memcpy(out + used, e->d_name, len);
+        used += (int)len;
+        out[used++] = '\n';
+        out[used] = 0;
+        n++;
+    }
+    closedir(d);
+    L("[API] list_models -> %d", n);
+    return n;
+}
+
+static const char* api_active_model() {
+    static char buf[160];
+    pthread_mutex_lock(&g_cfgMtx);
+    snprintf(buf, sizeof(buf), "%s", g_hasUi ? g_ui.activeModel : "");
+    pthread_mutex_unlock(&g_cfgMtx);
+    return buf;
+}
+
+static void api_cmd_reparse() {
+    pthread_mutex_lock(&g_cfgMtx);
+    g_ui.cmdReapply = 1;
+    g_hasUi = true;
+    pthread_mutex_unlock(&g_cfgMtx);
+    g_forceReparse = 1;   // 主线程的 do_load_model 会看清这个再重新读盘
+    L("[API] cmd_reparse");
+}
+
 extern "C" __attribute__((visibility("default")))
 const MmdApi* mmd_get_api(void) {
     static MmdApi api = {
@@ -1330,6 +1383,9 @@ const MmdApi* mmd_get_api(void) {
         api_log,
         api_get_log_path,
         api_get_last_error,
+        api_list_models,
+        api_active_model,
+        api_cmd_reparse,
     };
     static bool announced = false;
     if (!announced) {

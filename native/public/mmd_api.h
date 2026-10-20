@@ -85,6 +85,15 @@ typedef struct MmdApi {
     void (*log)(const char* msg);                  // UI 侧往游戏日志里写一行
     const char* (*get_log_path)(void);
     const char* (*get_last_error)(void);
+
+    // 列出游戏私有目录 models/ 下的模型（子目录名或 .pmx 文件名），
+    // 每行一个写进 out，返回条数。游戏进程才有权限扫自己的私有目录，
+    // UI 侧在 targetSdk 30 分区存储下读不到 /sdcard。
+    int  (*list_models)(char* out, int outSize);
+    // 同签名，但返回的是当前生效的模型名（空串 = 还没加载）
+    const char* (*active_model)(void);
+    // 把 PMX 重新解析一遍（换模型/改了文件用），下次 load 时生效
+    void (*cmd_reparse)(void);
 } MmdApi;
 
 // 唯一导出符号
