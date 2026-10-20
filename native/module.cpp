@@ -1414,9 +1414,14 @@ static void* worker(void*) {
     pick_dir();
     L("===== libmmdruntime v1.2 (game side) loaded =====");
     L("[STEALTH] installed=%d self='%s'", (int)stealth::installed(), stealth::self_path());
-    // visible_hits 走原始 fd 统计真实 maps，装好 hook 后应该是 0
-    int hits = stealth::visible_hits();
-    L("[STEALTH] real maps hits=%d %s", hits, hits == 0 ? "OK(hidden)" : "LEAKING");
+    L("[STEALTH] hooks: %s", stealth::hook_summary());
+    // 两个数各管一边：
+    //   real_mappings —— 真实 maps 里我们自己的映射段（2~4 正常）
+    //   filtered_hits —— 走 hook 读到的 maps 里我们还有几条（应该 0）
+    int realMaps = stealth::real_mappings();
+    int filtered = stealth::filtered_hits();
+    L("[STEALTH] real mappings=%d (2~4 normal) | via-hook=%d %s",
+      realMaps, filtered, filtered == 0 ? "HIDDEN-OK" : "FILTER-BROKEN");
     return nullptr;
 }
 

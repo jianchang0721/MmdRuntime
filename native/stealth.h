@@ -36,9 +36,18 @@ bool installed();
 // 自己这个 so 的加载路径（诊断用）
 const char* self_path();
 
-// 数一下现在 maps 里我们出现了几次（走原始 fd，绕过自己的 hook）。
-// 装好 hook 之后调应该返回 0。
-int visible_hits();
+// 各个 hook 装没装上的摘要（一行）。
+// 存在的意义：stealth 自己的 __android_log_print 在某些时机会被 logd 吃掉，
+// 交给游戏侧的 L() 写文件才看得到。
+const char* hook_summary();
+
+// 真实 maps 里我们自己的映射段数（走原始 fd，绕过自己的 hook）。
+// 正常是 2~4 段（代码 / 只读 / 数据），**非 0 才是对的**。
+int real_mappings();
+
+// 通过普通 fopen 读 maps 时还能看到我们几次。
+// 这个才是隐身是否生效的证据：装好 hook 后应该返回 0。
+int filtered_hits();
 
 // /proc/self/status 的 TracerPid 非 0 = 有人在 ptrace 我们
 bool is_traced();

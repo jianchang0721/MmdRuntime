@@ -16,9 +16,36 @@
 #include <cstring>
 
 #include <elf.h>
+#include <fcntl.h>
 #include <link.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 namespace elfu {
+
+// 直接系统调用读文件，绕开进程内所有 open/fopen hook。
+//
+// 为什么必须这样：stealth 会把 /proc/self/maps 里我们自己的 so 过滤掉，
+// 用 fopen 读只会拿到过滤后的副本 —— 过滤生效了，但也把“找自己”
+// 这条路给堵死了（UI 就是因为这个一直「等待连接」）。
+inline int RawOpen(const char* path) {
+    return (int)syscall(__NR_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC, 0);
+}
+
+// 把整个文件读进 buf，返回字节数，失败 -1
+inline long RawReadAll(const char* path, char* buf, long cap) {
+    int fd = RawOpen(path);
+    if (fd < 0) return -1;
+    long total = 0;
+    while (total < cap - 1) {
+        ssize_t n = read(fd, buf + total, (size_t)(cap - 1 - total));
+        if (n <= 0) break;
+        total += n;
+    }
+    close(fd);
+    buf[total] = 0;
+    return total;
+}
 
 // 按「同时包含两个子串」找 so 基址。
 //
@@ -27,19 +54,22 @@ namespace elfu {
 // 按原名去 maps 里搜直接落空。所以改成按目录 + 扩展名找：
 // 游戏自己绝对不会从私有目录 mmap 一个 .so，这条规则不会误伤。
 inline uintptr_t MapsBaseContains(const char* a, const char* b) {
-    FILE* f = fopen("/proc/self/maps", "r");
-    if (!f) return 0;
+    static char buf[512 * 1024];
+    if (RawReadAll("/proc/self/maps", buf, (long)sizeof(buf)) <= 0) return 0;
 
-    static char line[2048];
     uintptr_t addrs[64];
     int n = 0;
-    while (fgets(line, sizeof(line), f)) {
-        if (!strstr(line, a)) continue;
-        if (b && !strstr(line, b)) continue;
-        uintptr_t start = strtoull(line, nullptr, 16);
-        if (n < 64) addrs[n++] = start;
+    char* p = buf;
+    while (*p) {
+        char* e = strchr(p, '\n');
+        if (!e) break;
+        *e = 0;
+        if (strstr(p, a) && (!b || strstr(p, b))) {
+            uintptr_t start = strtoull(p, nullptr, 16);
+            if (n < 64) addrs[n++] = start;
+        }
+        p = e + 1;
     }
-    fclose(f);
 
     uintptr_t lowest = 0;
     for (int i = 0; i < n; i++) {
@@ -52,18 +82,22 @@ inline uintptr_t MapsBaseContains(const char* a, const char* b) {
 
 // 找 so 的加载基址：扫 /proc/self/maps，返回带 ELF 魔数的那个映射起点
 inline uintptr_t MapsBase(const char* soname) {
-    FILE* f = fopen("/proc/self/maps", "r");
-    if (!f) return 0;
+    static char buf[512 * 1024];
+    if (RawReadAll("/proc/self/maps", buf, (long)sizeof(buf)) <= 0) return 0;
 
-    static char line[2048];
     uintptr_t addrs[128];
     int n = 0;
-    while (fgets(line, sizeof(line), f)) {
-        if (!strstr(line, soname)) continue;
-        uintptr_t start = strtoull(line, nullptr, 16);
-        if (n < 128) addrs[n++] = start;
+    char* p = buf;
+    while (*p) {
+        char* e = strchr(p, '\n');
+        if (!e) break;
+        *e = 0;
+        if (strstr(p, soname)) {
+            uintptr_t start = strtoull(p, nullptr, 16);
+            if (n < 128) addrs[n++] = start;
+        }
+        p = e + 1;
     }
-    fclose(f);
 
     uintptr_t lowest = 0;
     for (int i = 0; i < n; i++) {

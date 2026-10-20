@@ -54,6 +54,7 @@ int  g_markCount = 0;
 bool         g_installed = false;
 bool         g_hookOk    = false;
 char         g_selfPath[512] = {0};
+char         g_summary[256] = "not installed";
 
 // 原始函数
 int   (*g_open)(const char*, int, ...)            = nullptr;
@@ -435,16 +436,20 @@ void Install() {
         g_hookOk = false;
     }
 
-    SLOG("install: self='%s' marks=%d openat=%d open=%d fopen=%d dliter=%d prop=%d rc=%d ok=%d",
-         g_selfPath, g_markCount, aOpenat != nullptr, aOpen != nullptr,
-         aFopen != nullptr, aDlIter != nullptr, aPropGet != nullptr, rc, (int)g_hookOk);
+    snprintf(g_summary, sizeof(g_summary),
+             "openat=%d open=%d fopen=%d dliter=%d prop=%d rc=%d ok=%d marks=%d",
+             aOpenat != nullptr, aOpen != nullptr, aFopen != nullptr,
+             aDlIter != nullptr, aPropGet != nullptr, rc, (int)g_hookOk, g_markCount);
+    SLOG("install: self='%s' %s", g_selfPath, g_summary);
 }
 
 bool installed() { return g_hookOk; }
 
 const char* self_path() { return g_selfPath; }
 
-int visible_hits() {
+const char* hook_summary() { return g_summary; }
+
+int real_mappings() {
     // 故意走原始 openat：要看的是真实 maps，不是我们伪造的那份
     int fd = g_openat ? g_openat(AT_FDCWD, "/proc/self/maps", O_RDONLY | O_CLOEXEC, 0) : -1;
     if (fd < 0) return -1;
@@ -454,6 +459,28 @@ int visible_hits() {
     ssize_t r;
     while ((r = read(fd, buf, sizeof(buf))) > 0) data.append(buf, (size_t)r);
     close(fd);
+
+    int hits = 0;
+    size_t i = 0;
+    while (i < data.size()) {
+        size_t e = i;
+        while (e < data.size() && data[e] != '\n') e++;
+        if (LineHasMark(data.data() + i, e - i)) hits++;
+        i = e + 1;
+    }
+    return hits;
+}
+
+int filtered_hits() {
+    // 故意走普通 fopen：会命中我们自己的 hook，拿到过滤后的 memfd
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (!f) return -1;
+
+    std::string data;
+    char buf[16384];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) data.append(buf, n);
+    fclose(f);
 
     int hits = 0;
     size_t i = 0;
