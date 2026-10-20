@@ -136,7 +136,7 @@ bool build_materials(const Model& model,
         if (!mat) { if (logf) logf("[MAT] #%zu object_new failed", i); continue; }
 
         void* a1[1] = { &shader };
-        uo::u_call(mat, mc.ctorShader, a1);
+        uo::u_call_void(mat, mc.ctorShader, a1);
 
         // 贴图
         if (mc.setTexture && texName) {
@@ -147,7 +147,7 @@ bool build_materials(const Model& model,
             if (t) {
                 // string / Texture 都是引用类型，runtime_invoke 要的是对象指针的地址
                 void* a2[2] = { &texName, &t };
-                uo::u_call(mat, mc.setTexture, a2);
+                uo::u_call_void(mat, mc.setTexture, a2);
             }
         }
 
@@ -156,14 +156,14 @@ bool build_materials(const Model& model,
             // Color 是值类型（struct），传栈上地址
             float col[4] = { m.diffuse[0], m.diffuse[1], m.diffuse[2], m.diffuse[3] };
             void* a2[2] = { &colName, col };
-            uo::u_call(mat, mc.setColor, a2);
+            uo::u_call_void(mat, mc.setColor, a2);
         }
 
         // 渲染队列：半透明排到 Transparent
         if (mc.setQueue) {
             int32_t q = (m.diffuse[3] < 0.999f) ? 3000 : 2000;
             void* a1q[1] = { &q };
-            uo::u_call(mat, mc.setQueue, a1q);
+            uo::u_call_void(mat, mc.setQueue, a1q);
         }
 
         out.items[i] = mat;

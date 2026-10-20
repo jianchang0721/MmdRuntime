@@ -120,7 +120,7 @@ bool set_shared_materials(Smr& smr, void** materials, int count) {
     for (int i = 0; i < count; i++) dst[i] = materials[i];
 
     void* a[1] = { &arr };
-    uo::u_call(smr.managed, s_setShared, a);
+    uo::u_call_void(smr.managed, s_setShared, a);
     GLOG("[GAME] set sharedMaterials x%d", count);
     return true;
 }

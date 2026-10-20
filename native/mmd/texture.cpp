@@ -112,7 +112,7 @@ void* make_texture(const TexClasses& tc,
         if (arr) {
             memcpy(uo::u_array_data(arr), rgba, bytes);
             void* a1[1] = { &arr };
-            uo::u_call(tex, tc.loadRaw, a1);
+            uo::u_call_void(tex, tc.loadRaw, a1);
             uploaded = true;
         }
     }
@@ -123,7 +123,7 @@ void* make_texture(const TexClasses& tc,
             // Color32 内存布局：r,g,b,a 四个字节，跟 RGBA8888 一致
             memcpy(uo::u_array_data(arr), rgba, (size_t)w * (size_t)h * 4);
             void* a1[1] = { &arr };
-            uo::u_call(tex, tc.setPix32, a1);
+            uo::u_call_void(tex, tc.setPix32, a1);
             uploaded = true;
         }
     }
@@ -135,7 +135,7 @@ void* make_texture(const TexClasses& tc,
     if (tc.apply) {
         uint8_t upd = 0, noRead = 0;
         void* a2[2] = { &upd, &noRead };
-        uo::u_call(tex, tc.apply, a2);
+        uo::u_call_void(tex, tc.apply, a2);
     }
     return tex;
 }

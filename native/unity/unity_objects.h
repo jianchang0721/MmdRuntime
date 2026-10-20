@@ -49,6 +49,10 @@ void* u_method(void* klass, const char* name, int paramCount); // 找方法（�
 // 而撞错的表现是 runtime_invoke 不抛异常、安安静静返回 nullptr。
 void* u_method_typed(void* klass, const char* name, int paramCount, const char* p0Class);
 void* u_call(void* obj, void* method, void** args);        // runtime_invoke，返回 Il2CppObject*
+
+// 调 void 方法，只看有没有抛异常。
+// void 方法 runtime_invoke 照样返回 nullptr，用返回值判成功会全判成失败。
+bool u_call_void(void* obj, void* method, void** args);
 void* u_new_array(void* elemClass, size_t count);          // il2cpp_array_new
 void* u_array_data(void* arr);                             // 数组元素起始地址（跳过 32 字节头）
 void* u_array_data_from(void* arr, size_t idx);            // 第 idx 个元素的地址

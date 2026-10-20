@@ -181,7 +181,7 @@ void CameraCtrl::update() {
 
     struct { float x, y, z; } pos = { cx, cy, cz };
     void* a1[1] = { &pos };
-    uo::u_call(transform, g_setPos, a1);
+    uo::u_call_void(transform, g_setPos, a1);
 
     // 摄像机要看向 target：pitch 取负，因为「摄像机抬头」= 欧拉角减小
     // Unity 的 Quaternion 顺序是 (x, y, z, w)
@@ -194,12 +194,12 @@ void CameraCtrl::update() {
     float q[4] = { q0, q1, q2, q3 };
 
     void* a2[1] = { q };
-    uo::u_call(transform, g_setRot, a2);
+    uo::u_call_void(transform, g_setRot, a2);
 
     if (g_setFov) {
         float fov = 55.0f;
         void* a3[1] = { &fov };
-        uo::u_call(camera, g_setFov, a3);
+        uo::u_call_void(camera, g_setFov, a3);
     }
 }
 

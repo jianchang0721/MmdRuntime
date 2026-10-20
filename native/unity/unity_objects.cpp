@@ -119,6 +119,26 @@ Il2CppObject* invoke(const MethodInfo* m, void* obj, void** args) {
     return r;
 }
 
+// 调可能返回 void 的方法，只看有没有抛异常。
+//
+// 坑（build-49 亲手踩的）：void 方法 runtime_invoke 照样返回 nullptr。
+// 用「返回值 != null」判断成功会把所有成功调用误判成失败 ——
+// 当时表现是 224 根骨骼一根建不出来，而实际上 ctor 一直是好的。
+bool invoke_void(const MethodInfo* m, void* obj, void** args) {
+    if (!m) return false;
+    Il2CppException* exc = nullptr;
+    g_api.runtime_invoke(m, obj, args, &exc);
+    if (exc) {
+        void* cl = *(void**)exc;
+        const char* n = cl && g_api.class_get_name ? g_api.class_get_name((Il2CppClass*)cl) : "?";
+        ULOG("[UNITYOBJ] invoke threw %s (method=%p obj=%p)",
+             n ? n : "?", (void*)m, obj);
+        g_lastException = n ? n : "?";
+        return false;
+    }
+    return true;
+}
+
 int32_t invoke_int(const MethodInfo* m, void* obj, void** args, int32_t dflt) {
     Il2CppObject* r = invoke(m, obj, args);
     if (!r) return dflt;
@@ -207,13 +227,15 @@ void* create_node(const char* name, void* parentTransform, float lx, float ly, f
 
     Il2CppString* s = g_api.string_new ? g_api.string_new(name ? name : "mmd") : nullptr;
     void* args[1] = { &s };
-    Il2CppObject* ctorRet = invoke(g_mGoCtorString, go, args);
-    if (!ctorRet) {
-        ULOG("[UNITYOBJ] GameObject..ctor 抛异常或失败: %s (last=%s)",
-             name ? name : "?", g_lastException.c_str());
+    // 构造函数返回 void —— 只能看异常，不能看返回值
+    if (!invoke_void(g_mGoCtorString, go, args)) {
+        static int ctorFails = 0;
+        if (ctorFails++ < 10) {
+            ULOG("[UNITYOBJ] GameObject..ctor 失败 (%s): %s",
+                 name ? name : "?", g_lastException.c_str());
+        }
         return nullptr;
     }
-    ULOG("[UNITYOBJ] GameObject ok: %s -> %p", name ? name : "?", go);
 
     // 2) 取 Transform
     Il2CppObject* tr = invoke(g_mGetTransform, go, nullptr);
@@ -237,28 +259,28 @@ void* create_node(const char* name, void* parentTransform, float lx, float ly, f
 bool set_parent(void* transform, void* parentTransform) {
     if (!g_ready || !transform || !g_mSetParent) return false;
     void* a[1] = { parentTransform };
-    return invoke(g_mSetParent, transform, a) != nullptr;
+    return invoke_void(g_mSetParent, transform, a);
 }
 
 bool set_local_position(void* transform, float x, float y, float z) {
     if (!g_ready || !transform) return false;
     struct { float x, y, z; } v = { x, y, z };
     void* a[1] = { &v };
-    return invoke(g_mSetLocalPos, transform, a) != nullptr;
+    return invoke_void(g_mSetLocalPos, transform, a);
 }
 
 bool set_local_rotation(void* transform, float x, float y, float z, float w) {
     if (!g_ready || !transform || !g_mSetLocalRot) return false;
     struct { float x, y, z, w; } q = { x, y, z, w };
     void* a[1] = { &q };
-    return invoke(g_mSetLocalRot, transform, a) != nullptr;
+    return invoke_void(g_mSetLocalRot, transform, a);
 }
 
 bool set_local_scale(void* transform, float x, float y, float z) {
     if (!g_ready || !transform || !g_mSetLocalScale) return false;
     struct { float x, y, z; } v = { x, y, z };
     void* a[1] = { &v };
-    return invoke(g_mSetLocalScale, transform, a) != nullptr;
+    return invoke_void(g_mSetLocalScale, transform, a);
 }
 
 int32_t instance_id(void* obj) {
@@ -303,6 +325,10 @@ void* u_new_object(void* klass) {
 
 int created_nodes() { return g_created; }
 
+
+bool u_call_void(void* obj, void* method, void** args) {
+    return invoke_void((const MethodInfo*)method, obj, args);
+}
 
 void* u_method_typed(void* klass, const char* name, int paramCount, const char* p0Class) {
     return (void*)find_method_typed((Il2CppClass*)klass, name, paramCount, p0Class);

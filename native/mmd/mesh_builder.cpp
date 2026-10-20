@@ -178,7 +178,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
         // Unity 2018 的 set_vertices 是 set_vertices(Vector3[]&)，
         // runtime_invoke 要的是「指向数组引用的指针」
         void* a[1] = { &arr };
-        uo::u_call(mesh, mc.mSetVertices, a);
+        uo::u_call_void(mesh, mc.mSetVertices, a);
         MLOG("[MESH] step1/8 vertices done");
     }
 
@@ -195,7 +195,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                 d[i * 3 + 2] = v.nrm[2];
             }
             void* a[1] = { &arr };
-            uo::u_call(mesh, mc.mSetNormals, a);
+            uo::u_call_void(mesh, mc.mSetNormals, a);
         }
     }
 
@@ -211,7 +211,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                 d[i * 2 + 1] = v.uv[1];
             }
             void* a[1] = { &arr };
-            uo::u_call(mesh, mc.mSetUV, a);
+            uo::u_call_void(mesh, mc.mSetUV, a);
         }
     }
 
@@ -242,7 +242,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
         if (mc.mSetSubMeshCount && mc.mSetTrianglesSub && subs.size() > 1) {
             int32_t sn = (int32_t)subs.size();
             void* an[1] = { &sn };
-            uo::u_call(mesh, mc.mSetSubMeshCount, an);
+            uo::u_call_void(mesh, mc.mSetSubMeshCount, an);
 
             int okCount = 0;
             for (size_t si = 0; si < subs.size(); si++) {
@@ -255,7 +255,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                 }
                 int32_t idx = (int32_t)si;
                 void* a2[2] = { &arr, &idx };
-                uo::u_call(mesh, mc.mSetTrianglesSub, a2);
+                uo::u_call_void(mesh, mc.mSetTrianglesSub, a2);
                 okCount++;
             }
             multiOk = okCount == (int)subs.size();
@@ -270,7 +270,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
             int32_t* d = (int32_t*)uo::u_array_data(arr);
             for (size_t i = 0; i < nf; i++) d[i] = model.faceVertex[i];
             void* a[1] = { &arr };
-            uo::u_call(mesh, mc.mSetTriangles, a);
+            uo::u_call_void(mesh, mc.mSetTriangles, a);
             out.subMeshes = 1;
             MLOG("[MESH] fallback to single submesh (materials=%zu)", model.materials.size());
         }
@@ -299,7 +299,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                 }
             }
             void* a[1] = { &arr };
-            uo::u_call(mesh, mc.mSetBoneWeights, a);
+            uo::u_call_void(mesh, mc.mSetBoneWeights, a);
         }
     } else {
         MLOG("[MESH] set_boneWeights missing, skinning will use single bone");
@@ -327,7 +327,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                 m[14] = -n.worldPos[2];
             }
             void* a[1] = { &arr };
-            uo::u_call(mesh, mc.mSetBindposes, a);
+            uo::u_call_void(mesh, mc.mSetBindposes, a);
         }
     } else {
         MLOG("[MESH] set_bindposes missing or no bones");
@@ -338,7 +338,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
     if (mc.mUpload) {
         uint8_t keepReadable = 1;   // true：保留 CPU 副本，方便后面调试
         void* a[1] = { &keepReadable };
-        uo::u_call(mesh, mc.mUpload, a);
+        uo::u_call_void(mesh, mc.mUpload, a);
     }
 
     out.mesh = mesh;
