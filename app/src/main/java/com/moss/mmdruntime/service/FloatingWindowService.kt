@@ -55,9 +55,29 @@ class FloatingWindowService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /** 桥目录在 /data/local/tmp 下，App uid 没有写权限建不了目录；借 root 建一次。 */
+    private fun ensureBridgeDirectory() {
+        Thread {
+            try {
+                Runtime.getRuntime()
+                    .exec(arrayOf(
+                        "su", "-c",
+                        "mkdir -p /data/local/tmp/mmdrt && " +
+                        "chmod 777 /data/local/tmp/mmdrt && " +
+                        "chcon u:object_r:app_data_file:s0 /data/local/tmp/mmdrt 2>/dev/null; " +
+                        "chown root:root /data/local/tmp/mmdrt"
+                    ))
+                    .waitFor()
+            } catch (_: Throwable) {
+                // KernelSU 没授权就建不了，桥不可用但 UI 照常跑
+            }
+        }.start()
+    }
+
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        ensureBridgeDirectory()
 
         // 屏幕尺寸必须在 native 读取 shape 之前定下来。
         // Service 没有关联窗口，单看 resources.displayMetrics 经常拿到 0。
