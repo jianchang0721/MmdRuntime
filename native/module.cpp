@@ -601,6 +601,46 @@ static void probe_bones_layout() {
     int32_t backN = back ? (int32_t)((Il2CppArray*)back)->max_length : -1;
     L("[BONE] restored: get_bones()=%d  %s", backN, backN == orig ? "RESTORE-OK" : "RESTORE-FAIL");
 
+    // ---- 扩容到 224 测试 ----
+    // capacity 只有 144，必须换一块更大的内存。这里用 bionic malloc：
+    // Android 上 Unity 2018 默认就是 system allocator，SMR 析构时 free 我们的指针
+    // 走的是同一套堆，兼容。先做「改 → 读回 → 立刻还原」，验证完再考虑持久化。
+    const int32_t TARGET = 224;
+    int32_t* oldData = (int32_t*)*(void**)(base + 0x1e0);
+    int64_t  oldCap  = *(int64_t*)(base + 0x1f8);
+
+    if (oldData && orig > 0 && orig < TARGET) {
+        int32_t* newData = (int32_t*)malloc((size_t)TARGET * 4);
+        if (newData) {
+            memset(newData, 0, (size_t)TARGET * 4);
+            for (int32_t i = 0; i < orig; i++) newData[i] = oldData[i];
+            for (int32_t i = orig; i < TARGET; i++) newData[i] = oldData[0];
+
+            *(void**)(base + 0x1e0) = newData;
+            *(int32_t*)(base + 0x1f0) = TARGET;
+            *(int64_t*)(base + 0x1f8) = TARGET;
+
+            Il2CppObject* eb = invoke(g_mGetBones, s.obj, nullptr);
+            int32_t eN = eb ? (int32_t)((Il2CppArray*)eb)->max_length : -1;
+            L("[BONE] expand test: %d -> %d (cap %lld -> %d), get_bones()=%d  %s",
+              orig, TARGET, (long long)oldCap, TARGET, eN,
+              eN == TARGET ? "EXPAND-OK" : "EXPAND-FAIL");
+
+            *(void**)(base + 0x1e0) = oldData;
+            *(int32_t*)(base + 0x1f0) = orig;
+            *(int64_t*)(base + 0x1f8) = oldCap;
+            free(newData);
+
+            Il2CppObject* rb = invoke(g_mGetBones, s.obj, nullptr);
+            int32_t rN = rb ? (int32_t)((Il2CppArray*)rb)->max_length : -1;
+            L("[BONE] after expand restore: get_bones()=%d  %s", rN, rN == orig ? "RESTORE-OK" : "RESTORE-FAIL");
+        } else {
+            LERR("[BONE] malloc %d bytes failed", TARGET * 4);
+        }
+    } else {
+        LERR("[BONE] expand skipped oldData=%p orig=%d", oldData, orig);
+    }
+
     L("========== [BONE] LAYOUT DUMP END ==========");
 }
 
