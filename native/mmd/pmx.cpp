@@ -79,12 +79,18 @@ public:
         memcpy(&len, d_ + off, 4);
         if (len < 4 || len > 120 || (len & 1)) return false;          // 至少 2 个字符
         if (off + 8 + (size_t)len > n_) return false;
+        bool hasNameChar = false;
         for (int32_t i = 0; i < len; i += 2) {
             uint16_t c = 0;
             memcpy(&c, d_ + off + 4 + i, 2);
             if (c >= 0xD800 && c <= 0xDFFF) return false;             // 代理对：不是名字
             if (c < 0x20 && c != 0) return false;                     // 控制字符：不是名字
+            if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) hasNameChar = true;
+            else if (c >= 0x3040 && c <= 0x30FF) hasNameChar = true;  // 平假名/片假名
+            else if (c >= 0x4E00 && c <= 0x9FFF) hasNameChar = true;  // 汉字
+            else if (c >= 0xFF01 && c <= 0xFF60) hasNameChar = true;  // 全角
         }
+        if (!hasNameChar) return false;
         size_t o2 = off + 4 + (size_t)len;
         int32_t len2 = 0;
         memcpy(&len2, d_ + o2, 4);
