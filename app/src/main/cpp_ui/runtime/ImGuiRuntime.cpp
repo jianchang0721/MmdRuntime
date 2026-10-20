@@ -7,29 +7,32 @@
 #include "imgui.h"
 
 namespace ImGuiRuntime {
+
 void LoadFonts() {
     ImGuiIO& io = ImGui::GetIO();
     const float scale = 2.6f;
 
     // 只认 Java 侧拷进来的字体（assets/fonts/cjk.ttf，单体 TTF）。
-    // 系统里的 NotoSansCJK-Regular.ttc 是字体集合，stb_truetype 会在
-    // ImGui::NewFrame 建图集时崩（实测 tombstone 落在 NewFrame+908），不再探测系统字体。
+    // 系统里的 NotoSansCJK-Regular.ttc 是五套字体的集合包，stb_truetype
+    // 在 ImGui::NewFrame 建图集时会崩（tombstone 落在 NewFrame+908），
+    // 所以系统字体一个都不探测。
     ImFont* body = nullptr;
     ImFont* heading = nullptr;
     if (!g_BodyFontPath.empty()) {
         body = io.Fonts->AddFontFromFileTTF(g_BodyFontPath.c_str(), 13.0f * scale, nullptr,
                    io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
         heading = io.Fonts->AddFontFromFileTTF(g_BodyFontPath.c_str(), 16.0f * scale, nullptr,
-                   io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+                    io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
     }
-    if (!body) body = io.Fonts->AddFontFromFileTTF("/system/fonts/Roboto-Regular.ttf", 13.0f * scale);
-    if (!heading) heading = body;
+    if (!body) {
+        body = io.Fonts->AddFontFromFileTTF("/system/fonts/Roboto-Regular.ttf", 13.0f * scale);
+    }
     if (!body) body = io.Fonts->AddFontDefault();
     if (!heading) heading = body;
+
     g_BodyFont = body;
     g_HeadingFont = heading;
     io.FontDefault = g_BodyFont;
-}
 }
 
 void BeginFrameInput() {
@@ -48,4 +51,5 @@ void BeginFrameInput() {
     }
     g_Keys.clear();
 }
-}
+
+}  // namespace ImGuiRuntime
