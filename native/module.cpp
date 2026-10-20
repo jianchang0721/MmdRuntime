@@ -423,7 +423,7 @@ static bool scan_smrs() {
     if (!arr) { LERR("[UNITY] FindObjectsOfTypeAll returned null"); return false; }
 
     size_t n = ((Il2CppArray*)arr)->max_length;
-    L("[UNITY] FindObjectsOfTypeAll(SkinnedMeshRenderer) -> %zu", n);
+    if (n > 0) L("[UNITY] FindObjectsOfTypeAll(SkinnedMeshRenderer) -> %zu", n);
 
     g_smrs.clear();
     for (size_t i = 0; i < n; i++) {
@@ -579,15 +579,25 @@ extern "C" void native_tick() {
         g_stage = ST_SCAN;
         break;
 
-    case ST_SCAN:
+    case ST_SCAN: {
+        // 场景可能还没加载完（登录界面一个 SMR 都没有），每 2 秒重试
+        static int scans = 0;
+        static long long lastScan = 0;
+        if (now_ms() - lastScan < 2000) break;
+        lastScan = now_ms();
+        scans++;
         if (scan_smrs()) {
-            snprintf(g_status, sizeof(g_status), "found %zu SMR", g_smrs.size());
+            L("[UNITY] SMR found on scan #%d: %zu", scans, g_smrs.size());
+            snprintf(g_status, sizeof(g_status), "found %zu SMR (scan %d)", g_smrs.size(), scans);
             g_stage = ST_DUMP;
-        } else {
-            snprintf(g_status, sizeof(g_status), "no SMR found");
+        } else if (scans >= 300) {
+            snprintf(g_status, sizeof(g_status), "no SMR after %d scans", scans);
             g_stage = ST_DONE;
+        } else {
+            snprintf(g_status, sizeof(g_status), "scanning SMR #%d (0 found)", scans);
         }
         break;
+    }
 
     case ST_DUMP:
         dump_smrs();
