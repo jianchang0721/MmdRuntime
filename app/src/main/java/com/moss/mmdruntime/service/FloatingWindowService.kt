@@ -124,8 +124,18 @@ class FloatingWindowService : Service() {
     }
 
     private fun prepareImGuiFonts() {
-        val body = copyAssetFontToFiles("fonts/Nunito-Regular.ttf")
-        val heading = copyAssetFontToFiles("fonts/Nunito-Bold.ttf")
+        // 中文字体（单体 TTF，随 APK 一起打包），没有就退回模板自带的 Nunito
+        val cjk = File(filesDir, "cjk.ttf")
+        try {
+            assets.open("fonts/cjk.ttf").use { input ->
+                cjk.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (_: Throwable) { }
+
+        val body = if (cjk.exists() && cjk.length() > 100_000) cjk
+                   else copyAssetFontToFiles("fonts/Nunito-Regular.ttf")
+        val heading = if (cjk.exists() && cjk.length() > 100_000) cjk
+                      else copyAssetFontToFiles("fonts/Nunito-Bold.ttf")
         JniBridge.setFontPaths(body.absolutePath, heading.absolutePath)
     }
 
