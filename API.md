@@ -99,6 +99,9 @@ g_api->get_status(&st);
 | `cmd_rescan()` | 清空 SMR 列表重新扫（换场景/换角色后用） |
 | `cmd_unload()` | 请求还原（当前是 stub，只把状态打回 IDLE） |
 | `log("...")` | UI 想留痕的写进游戏侧同一份日志，前缀 `[UI]` |
+| `list_models(out, size)` | 扫游戏私有目录 `models/`，每行一个名字（子目录名或 .pmx 文件名），返回条数。**在 targetSdk 30 分区存储下 UI 读不到 /sdcard，模型列表只能问游戏侧要** |
+| `active_model()` | 回读当前生效的模型名（空串 = 还没加载） |
+| `cmd_reparse()` | 置 `g_forceReparse`，下次 `do_load_model` 时重新读盘（换模型文件后不用重启游戏） |
 
 命令是**置位式**：setter 只写标志，真正动作在下一次 `native_tick`（游戏主线程）里做，做完清标志。所以 UI 侧连点两次不会跑两遍。
 
