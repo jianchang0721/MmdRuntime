@@ -4,10 +4,13 @@
 #include "loader.h"
 
 #include <android/log.h>
+#include <cstdarg>
 #include <cstdio>
 #include <vector>
 
 #include "bone_hook.h"
+#include "mmd/material.h"
+#include "mmd/texture.h"
 #include "unity/unity_objects.h"
 
 #define LTAG "MmdLoader"
@@ -20,9 +23,18 @@ void set_err(LoadResult& out, const char* msg) {
     snprintf(out.error, sizeof(out.error), "%s", msg ? msg : "unknown");
     LLOG("[LOADER] FAILED: %s", out.error);
 }
+
+// mmd 层要的是 printf 风格回调，LLOG 是宏传不了函数指针，包一层
+void logf_cb(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    __android_log_vprint(ANDROID_LOG_INFO, LTAG, fmt, ap);
+    va_end(ap);
+}
 }
 
-bool load_model_into_smr(const mmd::Model& model, Smr& smr, void* roleRoot, LoadResult& out) {
+bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
+                         Smr& smr, void* roleRoot, LoadResult& out) {
     out = LoadResult{};
 
     if (!smr.native) { set_err(out, "SMR native pointer is null"); return false; }
@@ -65,7 +77,22 @@ bool load_model_into_smr(const mmd::Model& model, Smr& smr, void* roleRoot, Load
     out.mesh = bm.mesh;
     out.verts = bm.vertexCount;
     out.tris = bm.indexCount / 3;
-    LLOG("[LOADER] mesh verts=%d tris=%d bones=%d", out.verts, out.tris, bm.boneCount);
+    out.subMeshes = bm.subMeshes;
+    LLOG("[LOADER] mesh verts=%d tris=%d bones=%d submeshes=%d",
+         out.verts, out.tris, bm.boneCount, bm.subMeshes);
+
+    // ---- ④b 贴图 + 材质 ----
+    mmd::TextureSet tex;
+    mmd::load_textures(model, pmxPath, tex, logf_cb);
+    out.textures = tex.loaded;
+
+    mmd::MaterialSet mats;
+    if (mmd::build_materials(model, tex, mats, logf_cb)) {
+        out.materials = mats.created;
+        LLOG("[LOADER] materials=%d shader='%s'", mats.created, mats.shaderName);
+    } else {
+        LLOG("[LOADER] 材质创建失败，模型会是一个默认色块");
+    }
 
     // ---- ⑤ 收集骨骼 instanceID ----
     std::vector<int32_t> ids((size_t)nb, 0);
@@ -96,6 +123,13 @@ bool load_model_into_smr(const mmd::Model& model, Smr& smr, void* roleRoot, Load
         return false;
     }
     out.meshId = meshId;
+
+    // ---- ⑦b 材质 ----
+    if (!mats.items.empty()) {
+        if (!set_shared_materials(smr, mats.items.data(), (int)mats.items.size())) {
+            LLOG("[LOADER] 材质没设上去（共用子网格数 %d），画面会是默认材质", bm.subMeshes);
+        }
+    }
 
     // ---- ⑧ 读回校验 ----
     int32_t sz = 0, mid = 0;

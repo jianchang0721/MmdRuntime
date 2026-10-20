@@ -8,6 +8,8 @@
 #include <cstring>
 
 #include "bone_hook.h"
+#include "unity/il2cpp_api.h"
+#include "unity/unity_objects.h"
 
 #define GTAG "MmdGame"
 #define GLOG(...) __android_log_print(ANDROID_LOG_INFO, GTAG, __VA_ARGS__)
@@ -78,6 +80,47 @@ bool set_mesh_instance(Smr& smr, int32_t meshInstanceId) {
     smr.meshId = meshInstanceId;
 
     GLOG("[GAME] set mesh instanceID %d -> %d", old, meshInstanceId);
+    return true;
+}
+
+bool set_shared_materials(Smr& smr, void** materials, int count) {
+    if (!smr.managed || !materials || count <= 0) {
+        GLOG("[GAME] set_shared_materials bad args managed=%p mats=%p count=%d",
+             smr.managed, (void*)materials, count);
+        return false;
+    }
+
+    static void* s_setShared = nullptr;
+    static void* s_matCls    = nullptr;
+    static bool  s_tried     = false;
+
+    if (!s_tried) {
+        s_tried = true;
+        void* rendererCls = uo::u_class("UnityEngine", "Renderer");
+        if (rendererCls) {
+            // 不同 Unity 版本命名不同，两个都试
+            s_setShared = uo::u_method(rendererCls, "set_sharedMaterials", 1);
+            if (!s_setShared) s_setShared = uo::u_method(rendererCls, "SetSharedMaterials", 1);
+            if (!s_setShared) s_setShared = uo::u_method(rendererCls, "set_materials", 1);
+        }
+        s_matCls = uo::u_class("UnityEngine", "Material");
+        GLOG("[GAME] sharedMaterials setter=%p matCls=%p", s_setShared, s_matCls);
+    }
+
+    if (!s_setShared || !s_matCls) {
+        GLOG("[GAME] 找不到 set_sharedMaterials，材质只能靠 native 改（本版未做）");
+        return false;
+    }
+
+    void* arr = uo::u_new_array(s_matCls, (size_t)count);
+    if (!arr) { GLOG("[GAME] material array alloc failed"); return false; }
+
+    void** dst = (void**)uo::u_array_data(arr);
+    for (int i = 0; i < count; i++) dst[i] = materials[i];
+
+    void* a[1] = { arr };
+    uo::u_call(smr.managed, s_setShared, a);
+    GLOG("[GAME] set sharedMaterials x%d", count);
     return true;
 }
 

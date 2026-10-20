@@ -26,6 +26,9 @@ struct LoadResult {
     int  verts = 0;
     int  tris = 0;
     int  boneSlots = 0;     // 扩容后 SMR 认为的骨骼数
+    int  subMeshes = 0;     // mesh 的子网格数（= 材质数）
+    int  materials = 0;     // 成功做出的材质数
+    int  textures  = 0;     // 成功解码的贴图数
     int32_t meshId = 0;
     void* mesh = nullptr;
     char  error[256] = {0};
@@ -34,7 +37,9 @@ struct LoadResult {
 
 // roleRoot：把骨骼树挂到哪个 Transform 下（游戏角色的节点）。
 // 传 nullptr 就挂场景根，先跑通再说。
+// pmxPath：PMX 绝对路径，贴图按它推目录
 bool load_model_into_smr(const mmd::Model& model,
+                         const char* pmxPath,
                          Smr& smr,
                          void* roleRoot,
                          LoadResult& out);

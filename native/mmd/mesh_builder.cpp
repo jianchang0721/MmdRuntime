@@ -17,6 +17,7 @@
 #include <cstring>
 #include <vector>
 
+#include "unity/il2cpp_api.h"
 #include "unity/unity_objects.h"
 
 #define MTAG "MmdMesh"
@@ -33,6 +34,8 @@ struct MeshClasses {
     void* mSetNormals = nullptr;
     void* mSetUV = nullptr;
     void* mSetTriangles = nullptr;
+    void* mSetTrianglesSub = nullptr;   // SetTriangles(int[], int submesh)
+    void* mSetSubMeshCount = nullptr;   // set_subMeshCount(int)
     void* mSetBoneWeights = nullptr;
     void* mSetBindposes = nullptr;
     void* mUpload = nullptr;
@@ -44,6 +47,26 @@ struct MeshClasses {
     void* elemMatrix4x4 = nullptr;
 };
 
+// 找「第一个参数是 int[]」的指定方法（避开 List<int> 重载）
+void* find_int_array_method(void* klass, const char* name, int nparams) {
+    if (!klass) return nullptr;
+    void* iter = nullptr;
+    const MethodInfo* m = nullptr;
+    while ((m = g_api.class_get_methods((Il2CppClass*)klass, &iter)) != nullptr) {
+        const char* mn = g_api.method_get_name(m);
+        if (!mn || strcmp(mn, name) != 0) continue;
+        if ((int)g_api.method_get_param_count(m) != nparams) continue;
+        const Il2CppType* t = g_api.method_get_param(m, 0);
+        if (!t) continue;
+        Il2CppClass* pc = g_api.class_from_type(t);
+        if (!pc) continue;
+        const char* cn = g_api.class_get_name(pc);
+        // int[] 的类名是 "Int32[]"（数组类型）
+        if (cn && (strcmp(cn, "Int32[]") == 0 || strcmp(cn, "Int32[]") == 0)) return (void*)m;
+    }
+    return nullptr;
+}
+
 bool init_mesh_classes(MeshClasses& mc) {
     mc.meshCls = uo::u_class("UnityEngine", "Mesh");
     if (!mc.meshCls) { MLOG("[MESH] Mesh class not found"); return false; }
@@ -53,6 +76,9 @@ bool init_mesh_classes(MeshClasses& mc) {
     mc.mSetNormals      = uo::u_method(mc.meshCls, "set_normals", 1);
     mc.mSetUV           = uo::u_method(mc.meshCls, "set_uv", 1);
     mc.mSetTriangles    = uo::u_method(mc.meshCls, "set_triangles", 1);
+    mc.mSetSubMeshCount = uo::u_method(mc.meshCls, "set_subMeshCount", 1);
+    // SetTriangles 有 int[] 和 List<int> 两个双参重载，得按第一个参数类型筛
+    mc.mSetTrianglesSub = find_int_array_method(mc.meshCls, "SetTriangles", 2);
     mc.mSetBoneWeights  = uo::u_method(mc.meshCls, "set_boneWeights", 1);
     mc.mSetBindposes    = uo::u_method(mc.meshCls, "set_bindposes", 1);
     mc.mUpload          = uo::u_method(mc.meshCls, "UploadMeshData", 1);
@@ -147,14 +173,64 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
         }
     }
 
-    // ---- 5) triangles ----
+    // ---- 5) triangles：按材质切子网格 ----
+    //
+    // PMX 的索引数组是按材质顺序排的：材质 0 占前 surfaceCount 个索引，
+    // 材质 1 接着往下……所以不用重排数据，只需要知道每段的范围。
     {
-        void* arr = uo::u_new_array(mc.elemInt, nf);
-        if (!arr) { MLOG("[MESH] triangles array alloc failed"); return false; }
-        int32_t* d = (int32_t*)uo::u_array_data(arr);
-        for (size_t i = 0; i < nf; i++) d[i] = model.faceVertex[i];
-        void* a[1] = { arr };
-        uo::u_call(mesh, mc.mSetTriangles, a);
+        struct Range { int start; int count; };
+        std::vector<Range> subs;
+        int cursor = 0;
+        for (const Material& mt : model.materials) {
+            int c = (int)mt.surfaceCount;
+            if (c <= 0) continue;
+            if (cursor >= (int)nf) break;
+            if (cursor + c > (int)nf) c = (int)nf - cursor;   // 防御：越界就截
+            subs.push_back({cursor, c});
+            cursor += c;
+        }
+        // 材料表没覆盖到的尾巴，挂到最后一个子网格后面
+        if (cursor < (int)nf) {
+            if (subs.empty()) subs.push_back({0, (int)nf});
+            else subs.back().count += (int)nf - cursor;
+        }
+
+        bool multiOk = false;
+        if (mc.mSetSubMeshCount && mc.mSetTrianglesSub && subs.size() > 1) {
+            int32_t sn = (int32_t)subs.size();
+            void* an[1] = { &sn };
+            uo::u_call(mesh, mc.mSetSubMeshCount, an);
+
+            int okCount = 0;
+            for (size_t si = 0; si < subs.size(); si++) {
+                const Range& r = subs[si];
+                void* arr = uo::u_new_array(mc.elemInt, (size_t)r.count);
+                if (!arr) continue;
+                int32_t* d = (int32_t*)uo::u_array_data(arr);
+                for (int k = 0; k < r.count; k++) {
+                    d[k] = model.faceVertex[(size_t)(r.start + k)];
+                }
+                int32_t idx = (int32_t)si;
+                void* a2[2] = { arr, &idx };
+                uo::u_call(mesh, mc.mSetTrianglesSub, a2);
+                okCount++;
+            }
+            multiOk = okCount == (int)subs.size();
+            MLOG("[MESH] submeshes=%zu set=%d", subs.size(), okCount);
+            if (multiOk) out.subMeshes = (int)subs.size();
+        }
+
+        if (!multiOk) {
+            // 退回单子网格（或者接口缺失）
+            void* arr = uo::u_new_array(mc.elemInt, nf);
+            if (!arr) { MLOG("[MESH] triangles array alloc failed"); return false; }
+            int32_t* d = (int32_t*)uo::u_array_data(arr);
+            for (size_t i = 0; i < nf; i++) d[i] = model.faceVertex[i];
+            void* a[1] = { arr };
+            uo::u_call(mesh, mc.mSetTriangles, a);
+            out.subMeshes = 1;
+            MLOG("[MESH] fallback to single submesh (materials=%zu)", model.materials.size());
+        }
     }
 
     // ---- 6) boneWeights ----
@@ -223,11 +299,11 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
     out.vertexCount = (int)nv;
     out.indexCount = (int)nf;
     out.boneCount = nb;
-    out.subMeshes = 1;
+    if (out.subMeshes <= 0) out.subMeshes = 1;
     out.ok = true;
 
-    MLOG("[MESH] built ok: verts=%zu tris=%zu bones=%d mesh=%p",
-         nv, nf / 3, nb, mesh);
+    MLOG("[MESH] built ok: verts=%zu tris=%zu bones=%d submeshes=%d mesh=%p",
+         nv, nf / 3, nb, out.subMeshes, mesh);
     return true;
 }
 

@@ -31,4 +31,11 @@ bool set_mesh_instance(Smr& smr, int32_t meshInstanceId);
 // 只读：从 native 指针读回当前 boneSlots / meshId，用于校验
 bool read_back(const Smr& smr, int32_t* boneSlots, int32_t* meshId);
 
+// 把材质数组设给 SMR。
+//
+// 走 managed 的 Renderer.set_sharedMaterials（SMR 自己的 setter 被 strip 了，
+// 但基类 Renderer 上那个通常还在）。数量应当等于 mesh 的子网格数，少的那几个
+// 子网格会用 UnityEngine 默认材质（粉红），不会崩。
+bool set_shared_materials(Smr& smr, void** materials, int count);
+
 }  // namespace game

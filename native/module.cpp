@@ -854,14 +854,15 @@ static bool do_load_model() {
     smr.boneSlots = g_smrs[(size_t)idx].boneCount;
 
     g_load = game::LoadResult{};
-    if (!game::load_model_into_smr(g_model, smr, nullptr, g_load)) {
+    if (!game::load_model_into_smr(g_model, pmx.c_str(), smr, nullptr, g_load)) {
         LERR("[LOAD] 失败: %s", g_load.error);
         return false;
     }
 
     g_lastSmrIndex = idx;
-    L("[LOAD] 成功: bones=%d verts=%d tris=%d meshId=%d",
-      g_load.bonesBuilt, g_load.verts, g_load.tris, g_load.meshId);
+    L("[LOAD] 成功: bones=%d verts=%d tris=%d submeshes=%d tex=%d mat=%d meshId=%d",
+      g_load.bonesBuilt, g_load.verts, g_load.tris,
+      g_load.subMeshes, g_load.textures, g_load.materials, g_load.meshId);
     return true;
 }
 
