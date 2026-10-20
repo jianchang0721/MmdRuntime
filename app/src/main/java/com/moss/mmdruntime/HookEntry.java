@@ -141,7 +141,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         StringBuilder sb = new StringBuilder();
 
         // ① 游戏逻辑 so（必须第一个）
-        String r1 = loadSo(GAME_SO, true);
+        String r1 = loadSo(GAME_SO, true, act);
         sb.append("game=").append(r1);
 
         // ② 字体（UI so 依赖）
@@ -149,7 +149,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         sb.append(" | fonts=").append(r2);
 
         // ③ UI so
-        String r3 = loadSo(UI_SO, false);
+        String r3 = loadSo(UI_SO, false, act);
         sb.append(" | ui=").append(r3);
 
         // ④ 字体路径喂给 UI so
@@ -165,9 +165,9 @@ public class HookEntry implements IXposedHookLoadPackage {
         return sb.toString();
     }
 
-    static String loadSo(String soName, boolean isGameSide) {
+    static String loadSo(String soName, boolean isGameSide, Context ctx) {
         File src = null;
-        String dir = null;
+        String dir = DIRS[0];
         for (String d : DIRS) {
             File f = new File(d, soName);
             if (f.exists() && f.canRead()) {
@@ -176,16 +176,32 @@ public class HookEntry implements IXposedHookLoadPackage {
                 break;
             }
         }
-        if (src == null) return "找不到 " + soName + "（应放在 " + DIRS[0] + "）";
 
         String base = soName.endsWith(".so") ? soName.substring(0, soName.length() - 3) : soName;
         int seq = isGameSide ? (++loadSeq) : (++uiLoadSeq);
         String dstName = base + "_" + seq + ".so";
         File dst = new File(dir, dstName);
-        try {
-            copy(src, dst);
-        } catch (Throwable t) {
-            return "复制失败: " + t;
+
+        boolean alreadyAtDst = false;
+        if (src == null) {
+            // 游戏侧 so 只能靠人推到游戏目录；UI so 在模块 APK 里，自己解。
+            // （extractNativeLibs=false 时 APK 的 lib/ 不会落地到 nativeLibraryDir，
+            //   所以直接翻 zip 最稳）
+            if (isGameSide) return "找不到 " + soName + "（应放在 " + DIRS[0] + "）";
+            try {
+                extractSoFromApk(ctx, soName, dst);
+            } catch (Throwable t) {
+                return "从 APK 解 " + soName + " 失败: " + t;
+            }
+            alreadyAtDst = true;   // 已经落在目标路径了，别再自己拷自己（会把文件截成 0）
+        }
+
+        if (!alreadyAtDst) {
+            try {
+                copy(src, dst);
+            } catch (Throwable t) {
+                return "复制失败: " + t;
+            }
         }
         try {
             System.load(dst.getAbsolutePath());
@@ -229,10 +245,63 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
     }
 
+    /**
+     * 拿模块自己 APK 的路径。
+     *
+     * 游戏进程里查别的包可能被 Android 11+ 的包可见性挡住（抛 NameNotFound），
+     * 所以先试 PackageManager，再试隐藏 API IPackageManager（不经过可见性过滤），
+     * 最后试常见路径。
+     */
+    static String moduleApkPath(Context ctx) {
+        try {
+            ApplicationInfo ai = ctx.getPackageManager()
+                    .getApplicationInfo("com.moss.mmdruntime", 0);
+            if (ai != null && ai.sourceDir != null) return ai.sourceDir;
+        } catch (Throwable ignored) { }
+
+        try {
+            Class<?> at = XposedHelpers.findClass("android.app.ActivityThread", null);
+            Object pm = XposedHelpers.callStaticMethod(at, "getPackageManager");
+            Object ai = XposedHelpers.callMethod(pm, "getApplicationInfo",
+                    "com.moss.mmdruntime", 0L, 0);
+            if (ai != null) {
+                Object dir = XposedHelpers.getObjectField(ai, "sourceDir");
+                if (dir instanceof String) return (String) dir;
+            }
+        } catch (Throwable ignored) { }
+
+        return null;
+    }
+
+    /** 从模块 APK 的 lib/arm64-v8a/ 里解一个 so 落地 */
+    static void extractSoFromApk(Context ctx, String soName, File dst) throws Exception {
+        String apk = moduleApkPath(ctx);
+        if (apk == null) throw new RuntimeException("拿不到模块 APK 路径");
+        ZipFile zip = new ZipFile(apk);
+        ZipEntry entry = zip.getEntry("lib/arm64-v8a/" + soName);
+        if (entry == null) {
+            zip.close();
+            throw new RuntimeException("APK 里没有 lib/arm64-v8a/" + soName);
+        }
+        InputStream in = zip.getInputStream(entry);
+        OutputStream out = new FileOutputStream(dst);
+        try {
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        } finally {
+            try { in.close(); } catch (Throwable ignored) { }
+            try { out.close(); } catch (Throwable ignored) { }
+            try { zip.close(); } catch (Throwable ignored) { }
+        }
+        dst.setReadable(true, false);
+        dst.setExecutable(true, false);
+    }
+
     static void extractAsset(Context ctx, String assetName, File dst) throws Exception {
-        ApplicationInfo ai = ctx.getPackageManager()
-                .getApplicationInfo("com.moss.mmdruntime", 0);
-        ZipFile zip = new ZipFile(ai.sourceDir);
+        String apk = moduleApkPath(ctx);
+        if (apk == null) throw new RuntimeException("拿不到模块 APK 路径");
+        ZipFile zip = new ZipFile(apk);
         ZipEntry entry = zip.getEntry("assets/" + assetName);
         if (entry == null) throw new RuntimeException("assets 里没有 " + assetName);
         InputStream in = zip.getInputStream(entry);
