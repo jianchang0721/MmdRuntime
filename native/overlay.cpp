@@ -16,6 +16,8 @@
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <dlfcn.h>
+#include <link.h>
+#include <elf.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <cstdio>
@@ -28,7 +30,21 @@
 #include "dobby/dobby.h"
 
 #define OTAG "MmdOverlay"
-#define OLOG(...) __android_log_print(ANDROID_LOG_INFO, OTAG, __VA_ARGS__)
+
+static void olog_impl(const char* fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    __android_log_vprint(ANDROID_LOG_INFO, OTAG, fmt, ap);
+    va_end(ap);
+    // 同时落文件：游戏日志量大，logcat 环形缓冲会冲掉早期记录
+    FILE* f = fopen("/data/data/com.hermes.h1game/files/mmdruntime.log", "a");
+    if (f) {
+        va_list ap2; va_start(ap2, fmt);
+        vfprintf(f, fmt, ap2); fputc('\n', f);
+        va_end(ap2);
+        fclose(f);
+    }
+}
+#define OLOG(...) olog_impl(__VA_ARGS__)
 
 namespace overlay {
 
@@ -286,9 +302,88 @@ static EGLBoolean hook_swap_damage(EGLDisplay dpy, EGLSurface surf, EGLint* rect
     return g_origSwapDamage(dpy, surf, rects, n);
 }
 
+// dlsym(RTLD_DEFAULT) 在 app 的 classloader-namespace 里不保证能看到 libEGL
+// （libil2cpp 那次就是这么翻车的 → 手工解析 ELF .dynsym）
+static uintptr_t maps_base_of(const char* soname) {
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (!f) return 0;
+    static char line[2048];
+    uintptr_t lowest = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (!strstr(line, soname)) continue;
+        uintptr_t a = strtoull(line, nullptr, 16);
+        uint8_t* p = (uint8_t*)a;
+        if (p[0] == 0x7f && p[1] == 'E' && p[2] == 'L' && p[3] == 'F') { fclose(f); return a; }
+        if (!lowest || a < lowest) lowest = a;
+    }
+    fclose(f);
+    return lowest;
+}
+
+static uintptr_t elf_sym_of(uintptr_t base, const char* name) {
+    if (!base) return 0;
+    ElfW(Ehdr)* eh = (ElfW(Ehdr)*)base;
+    if (memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0) return 0;
+    uintptr_t dyn = 0;
+    ElfW(Phdr)* ph = (ElfW(Phdr)*)(base + eh->e_phoff);
+    for (int i = 0; i < eh->e_phnum; i++)
+        if (ph[i].p_type == PT_DYNAMIC) { dyn = base + ph[i].p_vaddr; break; }
+    if (!dyn) return 0;
+    uintptr_t symtab = 0, strtab = 0, hash = 0, gnu = 0;
+    for (ElfW(Dyn)* d = (ElfW(Dyn)*)dyn; d->d_tag != DT_NULL; d++) {
+        switch (d->d_tag) {
+            case DT_SYMTAB: symtab = d->d_un.d_ptr; break;
+            case DT_STRTAB: strtab = d->d_un.d_ptr; break;
+            case DT_HASH:   hash = d->d_un.d_ptr; break;
+            case DT_GNU_HASH: gnu = d->d_un.d_ptr; break;
+        }
+    }
+    if (symtab < base) symtab += base;
+    if (strtab < base) strtab += base;
+    if (hash && hash < base) hash += base;
+    if (gnu && gnu < base) gnu += base;
+    if (!symtab || !strtab) return 0;
+    uint32_t nsym = 0;
+    if (hash) nsym = ((uint32_t*)hash)[1];
+    else if (gnu) {
+        uint32_t* g = (uint32_t*)gnu;
+        uint32_t nb = g[0], off = g[1], bloom = g[2];
+        uint32_t* buckets = &g[4 + bloom * 2];
+        uint32_t* chain = &buckets[nb];
+        uint32_t last = 0;
+        for (uint32_t i = 0; i < nb; i++) if (buckets[i] > last) last = buckets[i];
+        if (last >= off) { while (!(chain[last - off] & 1)) last++; nsym = last + 1; }
+    }
+    if (!nsym || nsym > 200000) return 0;
+    ElfW(Sym)* syms = (ElfW(Sym)*)symtab;
+    const char* strs = (const char*)strtab;
+    size_t n = strlen(name);
+    for (uint32_t i = 0; i < nsym; i++) {
+        uint32_t o = syms[i].st_name;
+        if (!o || o > 0xFFFFFF) continue;
+        const char* s = strs + o;
+        size_t k = 0;
+        while (k <= n && s[k] == name[k]) k++;
+        if (k == n + 1) return base + syms[i].st_value;
+    }
+    return 0;
+}
+
 static bool hook_swap_buffers() {
-    void* sym = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
-    if (!sym) return false;
+    void* sym = nullptr;
+    uintptr_t eglbase = maps_base_of("libEGL.so");
+    if (eglbase) {
+        uintptr_t a = elf_sym_of(eglbase, "eglSwapBuffers");
+        if (a) sym = (void*)a;
+    }
+    if (!sym) {
+        sym = dlsym(RTLD_DEFAULT, "eglSwapBuffers");   // 兜底
+    }
+    if (!sym) {
+        static bool logged = false;
+        if (!logged) { logged = true; OLOG("[OVERLAY] eglSwapBuffers not found (eglbase=%p)", (void*)eglbase); }
+        return false;
+    }
     int rc = DobbyHook(sym, (void*)hook_swap, (void**)&g_origSwap);
     if (rc != 0 || !g_origSwap) {
         OLOG("[OVERLAY] DobbyHook eglSwapBuffers failed rc=%d", rc);
