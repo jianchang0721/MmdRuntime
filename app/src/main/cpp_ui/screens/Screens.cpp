@@ -93,16 +93,76 @@ void DrawGamesScreen() {
 }
 
 void DrawMenuScreen() {
-    WindowManager::BeginWindow("##main_window");
-    if (g_ModuleManager.IsModuleLoaded()) {
-        const FeatureManifest* manifest = g_ModuleManager.GetActiveManifest();
-        g_DynamicMenuRenderer.Render(*manifest, g_ModuleState, g_ModuleManager.GetActiveModule());
-    } else {
-        ImGui::SetCursorPos(ImVec2(42.0f, 96.0f));
-        if (UI::ErrorPanel("No Module Loaded", "Return to Games and select an online game.", "Return to Games")) {
-            WindowManager::GoTo(Screen::Games);
-        }
+    WindowManager::BeginWindow("##mmd_window", "MMD RUNTIME");
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 wp = ImGui::GetWindowPos();
+    float w = ImGui::GetWindowWidth();
+    float h = ImGui::GetWindowHeight();
+
+    // 顶部标题
+    dl->AddCircleFilled(ImVec2(wp.x + 30.0f, wp.y + 34.0f), 10.0f,
+                        ImGui::GetColorU32(Theme::WithAlpha(Theme::Colors::Accent, 0.80f)), 20);
+    ImGui::SetCursorPos(ImVec2(50.0f, 22.0f));
+    if (g_HeadingFont) ImGui::PushFont(g_HeadingFont);
+    ImGui::TextUnformatted("MMD RUNTIME");
+    if (g_HeadingFont) ImGui::PopFont();
+    ImGui::SetCursorPos(ImVec2(50.0f, 50.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::TextSecondary);
+    ImGui::TextUnformatted("模型 · 骨骼 · 动作");
+    ImGui::PopStyleColor();
+
+    // 状态卡
+    ImGui::SetCursorPos(ImVec2(24.0f, 90.0f));
+    ImGui::BeginChild("##status_card", ImVec2(w - 48.0f, 120.0f), false);
+    ImGui::SetCursorPos(ImVec2(16.0f, 12.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::Success);
+    ImGui::TextUnformatted("运行状态");
+    ImGui::PopStyleColor();
+    ImGui::SetCursorPos(ImVec2(16.0f, 40.0f));
+    ImGui::TextWrapped("%s", g_GameStatusMessage.empty() ? "等待游戏连接…" : g_GameStatusMessage.c_str());
+    ImGui::SetCursorPos(ImVec2(16.0f, 74.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, Theme::Colors::TextSecondary);
+    ImGui::TextUnformatted("PMX 解析 · il2cpp 绑定 · SMR 劫持");
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
+
+    // 功能开关区
+    ImGui::SetCursorPos(ImVec2(24.0f, 224.0f));
+    UI::LabelBlock("模型替换", "把角色的网格换成 MMD 模型");
+
+    ImGui::SetCursorPos(ImVec2(24.0f, 280.0f));
+    static bool enableReplace = false;
+    if (UI::Toggle("##enable_replace", &enableReplace)) {
+        Toast::Info(enableReplace ? "替换已开启" : "替换已关闭");
     }
+    ImGui::SameLine();
+    ImGui::TextUnformatted("启用模型替换");
+
+    ImGui::SetCursorPos(ImVec2(24.0f, 330.0f));
+    static float modelScale = 1.0f;
+    ImGui::SetNextItemWidth(w - 120.0f);
+    if (ImGui::SliderFloat("##scale", &modelScale, 0.1f, 3.0f, "缩放 %.2f")) { }
+    ImGui::SameLine();
+    ImGui::TextUnformatted("缩放");
+
+    // 按钮行
+    ImGui::SetCursorPos(ImVec2(24.0f, 392.0f));
+    if (UI::Button("重新扫描", ImVec2((w - 60.0f) * 0.5f, 44.0f))) {
+        Toast::Info("正在重新扫描 SMR…");
+    }
+    ImGui::SameLine();
+    if (UI::Button("导入模型", ImVec2((w - 60.0f) * 0.5f, 44.0f))) {
+        Toast::Success("用桌面 MmdRuntime 图标导入");
+    }
+
+    // 关闭按钮 + 底部状态
+    ImGui::SetCursorPos(ImVec2(w - 46.0f, 18.0f));
+    if (UI::IconButton(IconId::Close, "##close")) {
+        WindowManager::RequestClose();
+    }
+    UI::FooterStatus("悬浮菜单 · 不碰游戏进程", "v1.0", h - 40.0f, w, true);
+
     WindowManager::EndWindow();
 }
 }

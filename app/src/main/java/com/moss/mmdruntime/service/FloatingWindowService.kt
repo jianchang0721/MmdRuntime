@@ -58,8 +58,12 @@ class FloatingWindowService : Service() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val dm = resources.displayMetrics
-        screenWidth = dm.widthPixels
-        screenHeight = dm.heightPixels
+        screenWidth = if (dm.widthPixels > 0) dm.widthPixels
+                      else resources.getSystem().displayMetrics.widthPixels.also { if (it <= 0) 1080 }
+        screenHeight = if (dm.heightPixels > 0) dm.heightPixels
+                       else resources.getSystem().displayMetrics.heightPixels.also { if (it <= 0) 2400 }
+        screenWidth = if (screenWidth <= 0) 1080 else screenWidth
+        screenHeight = if (screenHeight <= 0) 2400 else screenHeight
         boundsManager = OverlayBoundsManager(screenWidth, screenHeight)
         JniBridge.setScreenSize(screenWidth, screenHeight)
         JniBridge.setConfigDirectory(File(filesDir, "configs").absolutePath)
