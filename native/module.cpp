@@ -227,10 +227,11 @@ static bool bind_api() {
         LERR("[IL2CPP] core api missing");
         return false;
     }
-    if (g_api.thread_attach) {
-        Il2CppDomain* d = g_api.domain_get();
-        if (d) g_api.thread_attach(d);
-    }
+    // 不再调 il2cpp_thread_attach。
+    // 实测（2026-10-20）：在主线程重复 attach 会让 Unity 2018.4 直接 abort()，
+    // crash buffer 里是 SIGABRT + libc.abort，日志停在 "pid=..." 之后、"bind ok" 之前。
+    // tick 由 Java Handler 每 16ms 在主线程调，那个线程本来就是 Unity 主线程，
+    // 已经在 il2cpp 域里，这步纯属多余。
     g_bound = true;
     L("[IL2CPP] bind ok");
     return true;
