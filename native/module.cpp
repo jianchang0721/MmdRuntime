@@ -1401,6 +1401,14 @@ static const char* api_active_model() {
 }
 
 static void api_cmd_reparse() {
+    pthread_mutex_lock(&g_cfgMtx);
+    g_ui.cmdReapply = 1;
+    g_hasUi = true;
+    pthread_mutex_unlock(&g_cfgMtx);
+    g_forceReparse = 1;   // 主线程的 do_load_model 会看清这个再重新读盘
+    L("[API] cmd_reparse");
+}
+
 static int api_camera_enable(int on) {
     game::camera_set_enabled(on);
     L("[API] camera_enable(%d) -> %d", on, game::camera_is_enabled());
@@ -1422,13 +1430,6 @@ static int api_camera_touch(int action, int pointerId, float x, float y, float v
 
 static void api_camera_zoom(float d) {
     game::g_camera.zoom(d);
-}
-    pthread_mutex_lock(&g_cfgMtx);
-    g_ui.cmdReapply = 1;
-    g_hasUi = true;
-    pthread_mutex_unlock(&g_cfgMtx);
-    g_forceReparse = 1;   // 主线程的 do_load_model 会看清这个再重新读盘
-    L("[API] cmd_reparse");
 }
 
 extern "C" __attribute__((visibility("default")))
