@@ -44,12 +44,24 @@ bool Bind() {
     if (now - g_LastBindTry < 1000) return false;
     g_LastBindTry = now;
 
-    uintptr_t base = elfu::MapsBase("libmmdruntime");
+    // 找游戏侧 so。不能按原名找 —— HookEntry 会把它改名成
+    // libil2cpp_ext_1.so。按「私有目录 + .so」找，游戏自己不会从那儿加载。
+    uintptr_t base = elfu::MapsBaseContains("/data/data/com.hermes.h1game/files/", ".so");
+    if (!base) base = elfu::MapsBaseContains("/data/user/0/com.hermes.h1game/files/", ".so");
+    if (!base) base = elfu::MapsBase("libil2cpp_ext");
+    if (!base) base = elfu::MapsBase("libmmdruntime");
     if (!base) {
         g_LastConfigStatus = "游戏侧 so 还没加载";
         return false;
     }
+
+    // 私有目录里可能不止一个 so（比如之前版本残留），逐个试到能拿到符号为止
     uintptr_t sym = elfu::ElfSym(base, "mmd_get_api");
+    if (!sym) {
+        // 换个思路：直接遍历 maps 里所有私有目录 so 的 base
+        uintptr_t alt = elfu::MapsBase("libil2cpp_ext");
+        if (alt && alt != base) sym = elfu::ElfSym(alt, "mmd_get_api");
+    }
     if (!sym) {
         g_LastConfigStatus = "找不到 mmd_get_api";
         return false;

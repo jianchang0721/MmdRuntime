@@ -20,6 +20,36 @@
 
 namespace elfu {
 
+// 按「同时包含两个子串」找 so 基址。
+//
+// 用 soname 找有个致命问题：HookEntry 为了让同一个 so 能重复加载，
+// 会把它复制改名（libmmdruntime.so → libil2cpp_ext_1.so），
+// 按原名去 maps 里搜直接落空。所以改成按目录 + 扩展名找：
+// 游戏自己绝对不会从私有目录 mmap 一个 .so，这条规则不会误伤。
+inline uintptr_t MapsBaseContains(const char* a, const char* b) {
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (!f) return 0;
+
+    static char line[2048];
+    uintptr_t addrs[64];
+    int n = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (!strstr(line, a)) continue;
+        if (b && !strstr(line, b)) continue;
+        uintptr_t start = strtoull(line, nullptr, 16);
+        if (n < 64) addrs[n++] = start;
+    }
+    fclose(f);
+
+    uintptr_t lowest = 0;
+    for (int i = 0; i < n; i++) {
+        uint8_t* p = (uint8_t*)addrs[i];
+        if (p[0] == 0x7f && p[1] == 'E' && p[2] == 'L' && p[3] == 'F') return addrs[i];
+        if (!lowest || addrs[i] < lowest) lowest = addrs[i];
+    }
+    return lowest;
+}
+
 // 找 so 的加载基址：扫 /proc/self/maps，返回带 ELF 魔数的那个映射起点
 inline uintptr_t MapsBase(const char* soname) {
     FILE* f = fopen("/proc/self/maps", "r");

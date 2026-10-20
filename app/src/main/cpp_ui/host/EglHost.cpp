@@ -185,20 +185,28 @@ void RenderFrame(EGLDisplay dpy, EGLSurface surf) {
     g_panel.h = sz.y;
     g_panel.valid = WindowManager::showOverlay && sz.x > 1.0f && sz.y > 1.0f;
 
-    // 画到默认 framebuffer（游戏若刚渲完到 FBO，这里必须先解绑）
+    // ---- 关键：保存当前 framebuffer / viewport ----
+    //
+    // 游戏完全可能正在渲染到自己的 FBO（后处理、UI 层、后缓冲）。
+    // 我们为了把 UI 画到屏幕上会临时 bind 0，但**必须还原**——
+    // 否则下一帧游戏把画面画到屏幕而不是它的 FBO，表现就是黑屏。
+    GLint savedFbo = 0;
+    GLint savedVp[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &savedFbo);
+    glGetIntegerv(GL_VIEWPORT, savedVp);
+
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, w, h);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-    // 把状态还干净，Unity 下一帧照旧
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glUseProgram(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindVertexArray(0);
+    // 还原
+    glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)savedFbo);
+    glViewport(savedVp[0], savedVp[1], savedVp[2], savedVp[3]);
+
+    // 注意：不要再手动 glDisable/glBind 一大片。
+    // ImGui 的 OpenGL3 后端自己在 RenderDrawData 结尾已经把 blend/depth/
+    // cull/scissor/viewport 都恢复成进入前的值了，我们再覆盖一遍就是倒帮忙。
+    // （黑屏那版就是在这里把 Unity 的 depth test 给关了）
 
     g_host.frames++;
     if (g_host.frames == 60 || g_host.frames == 600) {
