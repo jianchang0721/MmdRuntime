@@ -45,7 +45,7 @@ class FloatingWindowService : Service() {
     private var windowCollapsed = false
     private lateinit var boundsManager: OverlayBoundsManager
 
-    private companion object {
+    companion object {
         const val TAG = "FloatingWindowService"
         const val CHANNEL_ID = "floating_window_channel"
         const val TOUCH_NONE = 0
