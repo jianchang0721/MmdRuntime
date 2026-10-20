@@ -74,6 +74,34 @@ const MethodInfo* find_method(Il2CppClass* klass, const char* name, int paramCou
     return nullptr;
 }
 
+// 按「名字 + 参数个数 + 第一个参数的类名」找方法。
+//
+// 为什么必须这样：Unity 的 .ctor / SetTexture / SetColor 有大量重载，
+// 只按参数个数筛会撞错。实测撞错的后果是 runtime_invoke 不抛异常、
+// 只是安安静静返回 nullptr，整条加载链在「看起来成功」中死掉。
+const MethodInfo* find_method_typed(Il2CppClass* klass, const char* name,
+                                    int paramCount, const char* p0Class) {
+    if (!klass || !name) return nullptr;
+    for (Il2CppClass* k = klass; k; k = g_api.class_get_parent ? g_api.class_get_parent(k) : nullptr) {
+        void* iter = nullptr;
+        const MethodInfo* m;
+        while ((m = g_api.class_get_methods(k, &iter))) {
+            const char* nm = g_api.method_get_name(m);
+            if (!nm || strcmp(nm, name) != 0) continue;
+            if (paramCount >= 0 && (int)g_api.method_get_param_count(m) != paramCount) continue;
+            if (p0Class && g_api.method_get_param && g_api.class_from_type && g_api.class_get_name) {
+                const Il2CppType* t = g_api.method_get_param(m, 0);
+                if (!t) continue;
+                Il2CppClass* pc = g_api.class_from_type(t);
+                const char* cn = pc ? g_api.class_get_name(pc) : nullptr;
+                if (!cn || strcmp(cn, p0Class) != 0) continue;
+            }
+            return m;
+        }
+    }
+    return nullptr;
+}
+
 Il2CppObject* invoke(const MethodInfo* m, void* obj, void** args) {
     if (!m) return nullptr;
     Il2CppException* exc = nullptr;
@@ -110,10 +138,17 @@ bool init() {
         return false;
     }
 
-    g_mGoCtorString  = find_method(g_goClass, ".ctor", 1);
+    // .ctor(string)：GameObject 有多个单参 ctor，必须按参数类型筛，
+    // 否则撞上 .ctor(string, Type[]) 那个，传进去静默失败返回 nullptr。
+    g_mGoCtorString  = find_method_typed(g_goClass, ".ctor", 1, "String");
+    if (!g_mGoCtorString) g_mGoCtorString = find_method(g_goClass, ".ctor", 1);
+
     g_mGetTransform  = find_method(g_goClass, "get_transform", 0);
-    g_mSetParent     = find_method(g_trClass, "set_parent", 1);
-    g_mSetLocalPos   = find_method(g_trClass, "set_localPosition", 1);
+    g_mSetParent     = find_method_typed(g_trClass, "set_parent", 1, "Transform");
+    if (!g_mSetParent) g_mSetParent = find_method(g_trClass, "set_parent", 1);
+
+    g_mSetLocalPos   = find_method_typed(g_trClass, "set_localPosition", 1, "Vector3");
+    if (!g_mSetLocalPos) g_mSetLocalPos = find_method(g_trClass, "set_localPosition", 1);
     g_mSetLocalRot   = find_method(g_trClass, "set_localRotation", 1);
     g_mSetLocalScale = find_method(g_trClass, "set_localScale", 1);
     if (g_objClass) {
@@ -124,6 +159,26 @@ bool init() {
     ULOG("[UNITYOBJ] ctor=%p getTransform=%p setParent=%p setLocalPos=%p setLocalRot=%p setLocalScale=%p",
          (void*)g_mGoCtorString, (void*)g_mGetTransform, (void*)g_mSetParent,
          (void*)g_mSetLocalPos, (void*)g_mSetLocalRot, (void*)g_mSetLocalScale);
+    // 把 GameObject 所有单参 .ctor 列出来，确认到底有几个、选中的是哪个
+    {
+        void* iter = nullptr;
+        const MethodInfo* m;
+        int idx = 0;
+        while ((m = g_api.class_get_methods(g_goClass, &iter))) {
+            const char* nm = g_api.method_get_name(m);
+            if (!nm || strcmp(nm, ".ctor") != 0) continue;
+            uint32_t pc = g_api.method_get_param_count(m);
+            char buf[64] = {0};
+            if (pc > 0 && g_api.method_get_param && g_api.class_from_type && g_api.class_get_name) {
+                const Il2CppType* t = g_api.method_get_param(m, 0);
+                Il2CppClass* pcl = t ? g_api.class_from_type(t) : nullptr;
+                const char* cn = pcl ? g_api.class_get_name(pcl) : nullptr;
+                if (cn) snprintf(buf, sizeof(buf), "%s", cn);
+            }
+            ULOG("[UNITYOBJ]   ctor#%d params=%u p0=%s %s", idx++, pc, buf[0] ? buf : "-",
+                 (m == g_mGoCtorString) ? "<== SELECTED" : "");
+        }
+    }
 
     if (!g_mGoCtorString || !g_mGetTransform || !g_mSetParent || !g_mSetLocalPos) {
         ULOG("[UNITYOBJ] essential method missing");

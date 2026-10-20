@@ -1,6 +1,8 @@
 #include "OverlayWindowManager.h"
 
 #include <algorithm>
+#include <cmath>
+#include <vector>
 
 #include "AppState.h"
 #include "Theme.h"
@@ -63,10 +65,106 @@ void RequestClose() {
 void RequestCollapse() { collapsed = true; }
 
 void RequestExpand() { collapsed = false; }
+// =====================================================================
+// 面板拖拽
+//
+// 面板画在游戏的 GL 帧上，没有 Android 窗口可以依附，位置全由自己维护。
+// 规则：
+//   · 只有按在标题栏那一条上才拖（高度 = Theme::Sizes::TitleBarHeight）
+//   · 拖动阈值 8px，避免误触
+//   · 位置夹在屏幕内，不允许拖出可视区
+//   · 拖动期间的事件不喂给 ImGui，否则会点到按钮
+// =====================================================================
+ImVec2 panelPos = ImVec2(0.0f, 0.0f);
+
+namespace {
+
+bool  g_dragging  = false;
+float g_dragOffX  = 0.0f;
+float g_dragOffY  = 0.0f;
+float g_downX     = 0.0f;
+float g_downY     = 0.0f;
+bool  g_downValid = false;
+const float kDragThreshold = 8.0f;
+
+float Clampf(float v, float lo, float hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+}  // namespace
+
+bool IsDragging() { return g_dragging; }
+
+void ProcessDrag(std::vector<TouchInputEvent>& events) {
+    if (events.empty()) return;
+
+    ImVec2 size = SizeFor(currentScreen);
+    const float titleH = Theme::Sizes::TitleBarHeight;
+
+    std::vector<TouchInputEvent> keep;
+    keep.reserve(events.size());
+
+    for (const TouchInputEvent& ev : events) {
+        if (ev.action == 0) {          // DOWN
+            // 只有按在标题栏上才算拖面板
+            const bool inTitle =
+                ev.x >= panelPos.x && ev.x <= panelPos.x + size.x &&
+                ev.y >= panelPos.y && ev.y <= panelPos.y + titleH;
+            if (inTitle && !collapsed) {
+                g_downX = ev.x;
+                g_downY = ev.y;
+                g_downValid = true;
+                continue;               // 吃掉，不喂 ImGui
+            }
+            keep.push_back(ev);
+            continue;
+        }
+
+        if (ev.action == 2) {          // MOVE
+            if (g_downValid) {
+                const float dx = ev.x - g_downX;
+                const float dy = ev.y - g_downY;
+                if (!g_dragging && (std::fabs(dx) > kDragThreshold ||
+                                    std::fabs(dy) > kDragThreshold)) {
+                    g_dragging = true;
+                    g_dragOffX = panelPos.x - g_downX;
+                    g_dragOffY = panelPos.y - g_downY;
+                }
+                if (g_dragging) {
+                    float nx = ev.x + g_dragOffX;
+                    float ny = ev.y + g_dragOffY;
+                    // 夹在屏幕内，留 24px 让边缘还能抓住
+                    nx = Clampf(nx, -size.x + 24.0f, (float)screenW - 24.0f);
+                    ny = Clampf(ny, 0.0f, (float)screenH - titleH);
+                    panelPos = ImVec2(nx, ny);
+                }
+                continue;               // 拖动期间全吃掉
+            }
+            keep.push_back(ev);
+            continue;
+        }
+
+        if (ev.action == 1 || ev.action == 3) {   // UP / CANCEL
+            if (g_downValid) {
+                // 不管有没有真拖过，这次触摸都归面板，别让游戏收到
+                g_downValid = false;
+                g_dragging = false;
+                continue;
+            }
+            keep.push_back(ev);
+            continue;
+        }
+
+        keep.push_back(ev);
+    }
+
+    events.swap(keep);
+}
 
 void BeginWindow(const char* id, const char* title) {
     ImVec2 size = SizeFor(currentScreen);
-    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+    // 位置由 panelPos 决定（可拖），不再钉死在 (0,0)
+    ImGui::SetNextWindowPos(panelPos, ImGuiCond_Always);
     ImGui::SetNextWindowSize(size, ImGuiCond_Always);
     ImGui::Begin(id, nullptr,
                  ImGuiWindowFlags_NoDecoration |

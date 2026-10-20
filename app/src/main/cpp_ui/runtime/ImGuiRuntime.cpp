@@ -6,11 +6,12 @@
 #include <mutex>
 
 #include "AppState.h"
+#include "OverlayWindowManager.h"
 #include "imgui.h"
 
 #define LOG_TAG "ImGuiRuntime"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print((int)ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 
 namespace ImGuiRuntime {
 
@@ -87,6 +88,13 @@ void LoadFonts() {
 }
 
 void BeginFrameInput() {
+    // 先做拖拽：属于面板标题栏的触摸在这里被吃掉，
+    // 剩下的才进 ImGui。顺序不能反，否则会点到按钮。
+    {
+        std::lock_guard<std::mutex> lock(g_InputMutex);
+        WindowManager::ProcessDrag(g_Touches);
+    }
+
     std::lock_guard<std::mutex> lock(g_InputMutex);
     ImGuiIO& io = ImGui::GetIO();
     for (const auto& ev : g_Touches) {
