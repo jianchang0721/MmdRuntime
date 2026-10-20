@@ -66,6 +66,8 @@ public class HookEntry implements IXposedHookLoadPackage {
     private static native void    nativeUiFonts(String latin, String cjk);
     private static native boolean nativeUiTouch(int action, float x, float y, float vw, float vh);
     private static native boolean nativeUiReady();
+    private static native boolean nativeCameraTouch(int action, int pointerId,
+                                                    float x, float y, float vw, float vh);
 
     static int  loadSeq      = 0;
     static int  uiLoadSeq    = 0;
@@ -105,19 +107,42 @@ public class HookEntry implements IXposedHookLoadPackage {
                 }
             });
 
-            // 触摸转发：菜单吃掉的事件不让游戏收到
+            // 触摸分发，优先级从高到低：
+            //   1. UI 面板（ImGui，含标题栏拖拽）
+            //   2. 自由视角摄像机（左右半屏，开着才接管）
+            //   3. 游戏
+            // 多指逐根问，一根被吃就整体吃掉 —— 否则游戏会收到
+            // 「一半的拖动」，人物跟着乱走。
             XposedBridge.hookAllMethods(actCls, "dispatchTouchEvent", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    if (!uiSoReady || param.args == null || param.args.length < 1) return;
+                    if (param.args == null || param.args.length < 1) return;
                     try {
                         MotionEvent ev = (MotionEvent) param.args[0];
                         if (ev == null) return;
                         View decor = ((Activity) param.thisObject).getWindow().getDecorView();
                         int w = decor.getWidth(), h = decor.getHeight();
                         if (w <= 0 || h <= 0) return;
-                        boolean eaten = nativeUiTouch(
-                                ev.getActionMasked(), ev.getX(), ev.getY(), (float) w, (float) h);
+
+                        boolean eaten = false;
+                        final int cnt = ev.getPointerCount();
+                        for (int i = 0; i < cnt && !eaten; i++) {
+                            final int action = (cnt > 1)
+                                    ? (ev.getActionMasked() | (i << 8))
+                                    : ev.getActionMasked();
+                            final float x = ev.getX(i);
+                            final float y = ev.getY(i);
+                            final int pid = ev.getPointerId(i);
+
+                            if (uiSoReady && nativeUiTouch(action, x, y, (float) w, (float) h)) {
+                                eaten = true;
+                                break;
+                            }
+                            if (nativeCameraTouch(action, pid, x, y, (float) w, (float) h)) {
+                                eaten = true;
+                                break;
+                            }
+                        }
                         if (eaten) param.setResult(true);
                     } catch (Throwable ignored) {
                     }

@@ -106,11 +106,15 @@ void ProcessDrag(std::vector<TouchInputEvent>& events) {
 
     for (const TouchInputEvent& ev : events) {
         if (ev.action == 0) {          // DOWN
-            // 只有按在标题栏上才算拖面板
+            // 只有按在标题栏上才算拖面板，但要排除右上角关闭按钮那 30x30
+            // （不排除的话按钮永远收不到 DOWN，点了没反应）
             const bool inTitle =
                 ev.x >= panelPos.x && ev.x <= panelPos.x + size.x &&
                 ev.y >= panelPos.y && ev.y <= panelPos.y + titleH;
-            if (inTitle && !collapsed) {
+            const bool onClose =
+                ev.x >= panelPos.x + size.x - 48.0f &&
+                ev.y <= panelPos.y + 48.0f;
+            if (inTitle && !onClose && !collapsed) {
                 g_downX = ev.x;
                 g_downY = ev.y;
                 g_downValid = true;

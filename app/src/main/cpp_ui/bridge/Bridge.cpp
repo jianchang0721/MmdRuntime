@@ -245,4 +245,22 @@ void ImportModelsFromConfig() {
     if (Bind()) g_Api->log("model list refreshed");
 }
 
+int CameraEnable(int on) {
+    if (!Bind() || !g_Api->camera_enable) return 0;
+    return g_Api->camera_enable(on ? 1 : 0);
+}
+
+int CameraEnabled() {
+    if (!Bind() || !g_Api->camera_is_enabled) return 0;
+    return g_Api->camera_is_enabled();
+}
+
+void CameraReset() {
+    if (Bind() && g_Api->camera_reset) g_Api->camera_reset();
+}
+
+void CameraZoom(float delta) {
+    if (Bind() && g_Api->camera_zoom) g_Api->camera_zoom(delta);
+}
+
 }  // namespace Bridge

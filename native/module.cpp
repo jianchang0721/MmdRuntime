@@ -1278,6 +1278,21 @@ Java_com_moss_mmdruntime_HookEntry_nativeUiReady(JNIEnv*, jclass) {
     return (g_uiFns.ready && g_uiFns.ready()) ? JNI_TRUE : JNI_FALSE;
 }
 
+// 摄像机触摸。
+//
+// action 可能被 Java 侧编过 pointer index（多指时 base | (i << 8)），
+// 这里先拆开再交给 camera_touch —— 它按 pointerId 维护每个手指的状态。
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_moss_mmdruntime_HookEntry_nativeCameraTouch(JNIEnv*, jclass,
+                                                     jint action, jint pointerId,
+                                                     jfloat x, jfloat y,
+                                                     jfloat vw, jfloat vh) {
+    if (!game::g_camera.enabled) return JNI_FALSE;
+
+    const int base = action & 0xFF;
+    return game::camera_touch(base, (int)pointerId, x, y, vw, vh) ? JNI_TRUE : JNI_FALSE;
+}
+
 // =====================================================================
 // 对外导出：mmd_get_api()
 //

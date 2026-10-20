@@ -31,6 +31,10 @@ namespace {
 
 using Bridge::Shared;
 
+// 摄像机面板的本地状态
+bool  g_camBound    = false;
+float g_camLastDist = 4.0f;
+
 inline void StatusDot(ImVec4 color) {
     ImGui::PushStyleColor(ImGuiCol_Text, color);
     ImGui::TextUnformatted("●");
@@ -508,6 +512,52 @@ void DrawSettingsTab(Bridge::BridgeModel& Model) {
     if (UI::Button("重载 UI 配置", ImVec2(-1.0f, 0.0f))) {
         Bridge::ImportModelsFromConfig();
         Toast::Info("已重载");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    BeginSectionTitle("自由视角");
+    static bool  camOn      = false;
+    static float camDist    = 4.0f;
+    static float camFov     = 55.0f;
+
+    if (!g_camBound) {
+        g_camBound = true;
+        camOn = Bridge::CameraEnabled() == 1;
+        g_camLastDist = camDist;
+    }
+
+    if (UI::Toggle("启用自由视角", &camOn)) {
+        const int r = Bridge::CameraEnable(camOn ? 1 : 0);
+        camOn = (r == 1);
+        if (r != 1) Toast::Error("摄像机开启失败，看日志 [CAM]");
+        else Toast::Success(camOn ? "自由视角已开" : "自由视角已关");
+    }
+    ImGui::Spacing();
+
+    if (camOn) {
+        ImGui::TextDisabled("左半屏拖动 = 平移，右半屏拖动 = 旋转");
+        ImGui::Spacing();
+
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::SliderFloat("##camdist", &camDist, 0.5f, 30.0f, "距离 %.1f")) {
+            Bridge::CameraZoom(camDist - g_camLastDist);
+            g_camLastDist = camDist;
+        }
+        ImGui::Spacing();
+
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##camfov", &camFov, 20.0f, 110.0f, "视野 %.0f 度");
+        ImGui::Spacing();
+
+        if (UI::Button("复位视角", ImVec2(-1.0f, 0.0f))) {
+            Bridge::CameraReset();
+            camDist = 4.0f;
+            g_camLastDist = 4.0f;
+            Toast::Info("视角已复位");
+        }
     }
 
     ImGui::Spacing();

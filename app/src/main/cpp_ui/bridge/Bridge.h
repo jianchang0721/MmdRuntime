@@ -96,4 +96,10 @@ void RequestRescan();
 void RequestReapply();
 void ImportModelsFromConfig();
 
+// ---- 自由视角摄像机（透传到 mmd_get_api）----
+int  CameraEnable(int on);      // 返回 1 = 开启成功
+int  CameraEnabled();
+void CameraReset();
+void CameraZoom(float delta);   // 相对量，正数拉远
+
 }  // namespace Bridge
