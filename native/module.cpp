@@ -395,6 +395,17 @@ static const MethodInfo* g_mGetMesh = nullptr;   // SMR.get_sharedMesh
 static const MethodInfo* g_mGetVC = nullptr;     // Mesh.get_vertexCount
 
 static bool init_unity_refs() {
+    // 诊断：域里有几个 assembly、每个叫什么（只在失败时打，避免刷屏）
+    if (g_api.domain_get && g_api.domain_get_assemblies) {
+        Il2CppDomain* d = g_api.domain_get();
+        size_t an = 0;
+        const Il2CppAssembly** as = d ? g_api.domain_get_assemblies(d, &an) : nullptr;
+        static size_t lastAn = 0;
+        if (an != lastAn) {
+            lastAn = an;
+            L("[UNITY] assemblies=%zu", an);
+        }
+    }
     g_smrClass = find_class_any("UnityEngine", "SkinnedMeshRenderer");
     g_meshClass = find_class_any("UnityEngine", "Mesh");
     if (!g_smrClass || !g_meshClass) {
@@ -624,15 +635,26 @@ extern "C" void native_tick() {
         break;
     }
 
-    case ST_PARSE:
-        if (!init_unity_refs()) {
-            snprintf(g_status, sizeof(g_status), "unity class lookup failed");
+    case ST_PARSE: {
+        // Unity 的类表在游戏启动早期还没加载完，第一次查必然空。
+        // 跟 ST_SCAN 一样做成每秒重试，别再一脚踩死。
+        static int tries = 0;
+        static long long lastTry = 0;
+        if (now_ms() - lastTry < 1000) break;
+        lastTry = now_ms();
+        tries++;
+        if (init_unity_refs()) {
+            L("[UNITY] class refs ready after %d tries", tries);
+            snprintf(g_status, sizeof(g_status), "scanning SMR");
+            g_stage = ST_SCAN;
+        } else if (tries >= 120) {
+            snprintf(g_status, sizeof(g_status), "unity class lookup failed x120");
             g_stage = ST_DONE;
-            break;
+        } else {
+            snprintf(g_status, sizeof(g_status), "waiting unity classes (%d)", tries);
         }
-        snprintf(g_status, sizeof(g_status), "scanning SMR");
-        g_stage = ST_SCAN;
         break;
+    }
 
     case ST_SCAN: {
         // 场景可能还没加载完（登录界面一个 SMR 都没有），每 2 秒重试
