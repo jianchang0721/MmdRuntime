@@ -1,23 +1,18 @@
 package com.moss.mmdruntime;
 
 import android.app.Activity;
-import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Process;
-import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.FrameLayout;
-import android.widget.LinearLayout;
-import android.widget.TextView;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.WeakHashMap;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -26,14 +21,17 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * MmdRuntime —— 独立 MMD 运行时的壳。
+ * MmdRuntime —— 独立 MMD 运行时的壳（v0.9）
  *
- * 壳只干两件事：把 libmmdruntime.so 加载进游戏进程、提供一个主线程 tick。
- * 真正的逻辑（PMX 解析 / 骨架 / 蒙皮 / 渲染）全在 so 里，
- * 改完只需要替换 so，不用重装这个 APK。
+ * 这一版把 View 悬浮窗整个删了：往游戏 DecorView 里加 View 在部分 Activity 上
+ * 会碰上 getResources() 未初始化的坑，直接把游戏带闪退（实测）。
  *
- * 复制成 libmmdruntime_<n>.so 再加载：dlopen 对同一路径返回缓存句柄，
- * 不改名的话换了文件也不生效。
+ * 现在 UI 全在 so 里：ImGui 挂 eglSwapBuffers，画在游戏自己的 GL 帧上。
+ * 壳只干四件事：
+ *   1. 把 libmmdruntime.so 复制改名后 System.load
+ *   2. 每 16ms 调一次 nativeTick（主线程）
+ *   3. 把触摸事件转发给 native（菜单吃掉事件时返回 true）
+ *   4. 把类自身交给 native，供 ImGui 按钮回调（重载 so / 状态）
  */
 public class HookEntry implements IXposedHookLoadPackage {
 
@@ -48,13 +46,15 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     private static native void nativeTick();
     private static native String nativeStatus();
+    private static native void nativeBind(Class<?> cls);
+    private static native void nativeReset();
+    private static native boolean nativeTouch(int action, float x, float y, float vw, float vh);
 
     static int loadSeq = 0;
     static String lastStatus = "尚未加载";
-    static final WeakHashMap<Activity, LinearLayout> overlays = new WeakHashMap<>();
-    static TextView statusView = null;
     static Handler tickHandler = null;
     static int tickCount = 0;
+    static volatile boolean soReady = false;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
@@ -62,19 +62,35 @@ public class HookEntry implements IXposedHookLoadPackage {
         XposedBridge.log(TAG + ": hooked " + lp.packageName + " pid=" + Process.myPid());
         try {
             Class<?> actCls = XposedHelpers.findClass("android.app.Activity", lp.classLoader);
+
+            // 第一个 Activity 出现时加载 so（不建任何 View）
             XposedBridge.hookAllMethods(actCls, "onCreate", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    final Activity a = (Activity) param.thisObject;
-                    try {
-                        installOverlay(a);
-                        if (loadSeq == 0) {
-                            lastStatus = doLoad();
-                            refreshStatus();
-                        }
-                    } catch (Throwable t) {
-                        XposedBridge.log(TAG + ": overlay fail " + t);
+                    Activity a = (Activity) param.thisObject;
+                    if (a == null) return;
+                    if (loadSeq == 0 && isMainProcess()) {
+                        lastStatus = doLoad();
+                        XposedBridge.log(TAG + ": " + lastStatus);
                     }
+                }
+            });
+
+            // 触摸转发：菜单吃掉的事件不让游戏收到
+            XposedBridge.hookAllMethods(actCls, "dispatchTouchEvent", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (!soReady || param.args == null || param.args.length < 1) return;
+                    try {
+                        MotionEvent ev = (MotionEvent) param.args[0];
+                        if (ev == null) return;
+                        View decor = ((Activity) param.thisObject).getWindow().getDecorView();
+                        int w = decor.getWidth(), h = decor.getHeight();
+                        if (w <= 0 || h <= 0) return;
+                        boolean eaten = nativeTouch(ev.getActionMasked(), ev.getX(), ev.getY(),
+                                (float) w, (float) h);
+                        if (eaten) param.setResult(true);
+                    } catch (Throwable ignored) { }
                 }
             });
         } catch (Throwable t) {
@@ -84,7 +100,20 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     // ---------------- so 加载 ----------------
 
-    static synchronized String doLoad() {
+    static boolean isMainProcess() {
+        try {
+            java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.FileReader("/proc/self/cmdline"));
+            String s = r.readLine();
+            r.close();
+            return s != null && !s.contains(":");
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    /** static 且签名固定：native 侧通过 methodID 反射调用。 */
+    public static synchronized String doLoad() {
         File src = null;
         String dir = null;
         for (String d : DIRS) {
@@ -102,11 +131,18 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
         try {
             System.load(dst.getAbsolutePath());
+            soReady = true;
+            try { nativeBind(HookEntry.class); } catch (Throwable ignored) { }
             startTick();
             return "已加载 " + dstName + "  " + dst.length() + " 字节";
         } catch (Throwable t) {
             return "dlopen 失败: " + t;
         }
+    }
+
+    /** ImGui 面板状态按钮用；和 nativeStatus 同源。 */
+    public static String getStatus() {
+        try { return nativeStatus(); } catch (Throwable t) { return lastStatus; }
     }
 
     static void copy(File src, File dst) throws Exception {
@@ -133,95 +169,10 @@ public class HookEntry implements IXposedHookLoadPackage {
                 tickCount++;
                 try { nativeTick(); } catch (Throwable ignored) { }
                 if (tickCount % 120 == 0) {
-                    try { lastStatus = nativeStatus(); refreshStatus(); } catch (Throwable ignored) { }
+                    try { lastStatus = nativeStatus(); } catch (Throwable ignored) { }
                 }
                 tickHandler.postDelayed(this, 16);
             }
         });
-    }
-
-    // ---------------- 悬浮窗 ----------------
-
-    static void installOverlay(final Activity a) {
-        if (overlays.containsKey(a)) return;
-
-        LinearLayout root = new LinearLayout(a);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(14, 10, 14, 10);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(0xE6121219);
-        bg.setCornerRadius(16f);
-        bg.setStroke(2, 0x667C4DFF);
-        root.setBackground(bg);
-
-        TextView title = new TextView(a);
-        title.setText("MmdRuntime");
-        title.setTextColor(0xFFB388FF);
-        title.setTextSize(12);
-        root.addView(title);
-
-        final TextView status = new TextView(a);
-        status.setTextColor(0xFF7FD4FF);
-        status.setTextSize(10);
-        status.setText(lastStatus);
-        status.setPadding(0, 4, 0, 6);
-        root.addView(status);
-        statusView = status;
-
-        TextView btn = mkBtn(a, "重载 so");
-        btn.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                lastStatus = doLoad();
-                refreshStatus();
-            }
-        });
-        root.addView(btn);
-
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.leftMargin = 36;
-        lp.topMargin = 300;
-
-        ViewGroup decor = null;
-        try { decor = (ViewGroup) a.getWindow().getDecorView(); } catch (Throwable ignored) { }
-        if (decor != null) decor.addView(root, lp);
-        else a.addContentView(root, lp);
-
-        // 沿父链关掉裁剪，避免拖出边界就看不见
-        try {
-            android.view.ViewParent p = root.getParent();
-            int d = 0;
-            while (p instanceof ViewGroup && d++ < 10) {
-                ((ViewGroup) p).setClipChildren(false);
-                ((ViewGroup) p).setClipToPadding(false);
-                p = p.getParent();
-            }
-        } catch (Throwable ignored) { }
-
-        overlays.put(a, root);
-    }
-
-    static void refreshStatus() {
-        if (statusView == null) return;
-        statusView.post(new Runnable() {
-            @Override public void run() {
-                try { statusView.setText(lastStatus); } catch (Throwable ignored) { }
-            }
-        });
-    }
-
-    static TextView mkBtn(Activity a, String text) {
-        TextView tv = new TextView(a);
-        tv.setText(text);
-        tv.setTextColor(0xFFB388FF);
-        tv.setTextSize(12);
-        tv.setGravity(Gravity.CENTER);
-        tv.setPadding(18, 14, 18, 14);
-        GradientDrawable b = new GradientDrawable();
-        b.setColor(0x337C4DFF);
-        b.setCornerRadius(12f);
-        b.setStroke(1, 0xAA7C4DFF);
-        tv.setBackground(b);
-        return tv;
     }
 }

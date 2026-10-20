@@ -32,6 +32,8 @@
 
 #include "mmd/pmx.h"
 #include "unity/il2cpp_api.h"
+#include "overlay.h"
+#include "imgui/imgui.h"
 
 #define TAG "MmdRuntime"
 
@@ -518,6 +520,8 @@ static void run_swap_experiment() {
     g_expDone = true;
 }
 
+static void push_overlay_status();
+
 // =====================================================================
 // tick 状态机
 // =====================================================================
@@ -538,6 +542,9 @@ extern "C" void native_tick() {
     if (g_stage == ST_DONE) return;
     if (g_t0 == 0) { g_t0 = now_ms(); return; }
     g_ticks++;
+
+    static long long lastPush = 0;
+    if (now_ms() - lastPush > 1000) { lastPush = now_ms(); push_overlay_status(); }
 
     switch (g_stage) {
     case ST_WAIT:
@@ -617,6 +624,28 @@ extern "C" void native_tick() {
 }
 
 // =====================================================================
+// ImGui 面板里额外内容（overlay.cpp 每帧在面板里调）
+// =====================================================================
+static void drawMenuExtra() {
+    ImGui::Text("SMR count: %zu", g_smrs.size());
+    int maxBones = 0;
+    std::string best;
+    for (size_t i = 0; i < g_smrs.size(); i++) {
+        if (g_smrs[i].boneCount > maxBones) { maxBones = g_smrs[i].boneCount; best = g_smrs[i].name; }
+    }
+    if (maxBones > 0) ImGui::Text("max bones: %d  (%s)", maxBones, best.c_str());
+    ImGui::Text("stage: %d", (int)g_stage);
+    ImGui::Text("overlay: %s", overlay::ready() ? "ready" : "init...");
+}
+
+// 状态每秒刷到 ImGui
+static void push_overlay_status() {
+    char buf[300];
+    snprintf(buf, sizeof(buf), "%s | smr=%zu", g_status, g_smrs.size());
+    overlay::setStatus(buf);
+}
+
+// =====================================================================
 // JNI
 // =====================================================================
 extern "C" JNIEXPORT void JNICALL
@@ -633,12 +662,50 @@ Java_com_moss_mmdruntime_HookEntry_nativeStatus(JNIEnv* env, jclass) {
 
 static void* worker(void*) {
     pick_dir();
-    L("===== libmmdruntime v0.2 loaded =====");
+    L("===== libmmdruntime v0.9 (ImGui overlay) loaded =====");
     return nullptr;
 }
 
-JNIEXPORT jint JNI_OnLoad(JavaVM*, void*) {
+static JavaVM* g_vm = nullptr;
+static jobject g_hookCls = nullptr;
+static jmethodID g_midDoLoad = nullptr;
+static jmethodID g_midStatus = nullptr;
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_moss_mmdruntime_HookEntry_nativeBind(JNIEnv* env, jclass, jclass hookCls) {
+    if (g_hookCls) { env->DeleteGlobalRef(g_hookCls); g_hookCls = nullptr; }
+    g_hookCls = (jobject)env->NewGlobalRef(hookCls);
+    if (!g_hookCls) return;
+    g_midDoLoad = env->GetStaticMethodID((jclass)g_hookCls, "doLoad", "()Ljava/lang/String;");
+    g_midStatus = env->GetStaticMethodID((jclass)g_hookCls, "nativeStatus", "()Ljava/lang/String;");
+    overlay::bindJava(g_vm, g_hookCls, (void*)g_midDoLoad, (void*)g_midStatus);
+    L("[OVERLAY] java bridge bound doLoad=%p status=%p", (void*)g_midDoLoad, (void*)g_midStatus);
+}
+
+// 复位阶段机（ImGui 里将来放「重新扫描」，先留接口）
+extern "C" JNIEXPORT void JNICALL
+Java_com_moss_mmdruntime_HookEntry_nativeReset(JNIEnv*, jclass) {
+    g_stage = ST_PARSE;
+    g_expDone = false;
+    g_smrs.clear();
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_moss_mmdruntime_HookEntry_nativeTouch(JNIEnv*, jclass,
+                                               jint action, jfloat x, jfloat y,
+                                               jfloat vw, jfloat vh) {
+    return overlay::onTouch(action, x, y, vw, vh) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
+    g_vm = vm;
+
     pthread_t t;
     if (pthread_create(&t, nullptr, worker, nullptr) == 0) pthread_detach(t);
+
+    // ImGui 悬浮层：hook eglSwapBuffers，在游戏自己的 GL 帧上画
+    overlay::init(drawMenuExtra);
+
+    // 状态推到面板（tick 里每秒一次）
     return JNI_VERSION_1_6;
 }
