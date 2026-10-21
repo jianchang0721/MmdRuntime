@@ -128,6 +128,78 @@ static void dump_visibility(SelfSmr& s, void* sourceSmr, void* modelRoot) {
     dump_renderer_state("self", s.smr);
     dump_renderer_state("ref ", sourceSmr);
 
+    // ===== 场景排查：activeInHierarchy / 父链 / 所有相机 cullingMask =====
+    {
+        void* goCls2 = uo::u_class("UnityEngine", "GameObject");
+        void* objCls2 = uo::u_class("UnityEngine", "Object");
+        void* compCls2 = uo::u_class("UnityEngine", "Component");
+        void* trCls2 = uo::u_class("UnityEngine", "Transform");
+        void* mGetAH  = goCls2 ? uo::u_method(goCls2, "get_activeInHierarchy", 0) : nullptr;
+        void* mGetAS  = goCls2 ? uo::u_method(goCls2, "get_activeSelf", 0) : nullptr;
+        void* mGetName = objCls2 ? uo::u_method(objCls2, "get_name", 0) : nullptr;
+        void* mGetGO   = compCls2 ? uo::u_method(compCls2, "get_gameObject", 0) : nullptr;
+        void* mGetParent = trCls2 ? uo::u_method(trCls2, "get_parent", 0) : nullptr;
+        void* mGetLayer  = goCls2 ? uo::u_method(goCls2, "get_layer", 0) : nullptr;
+        void* mGetTr2    = compCls2 ? uo::u_method(compCls2, "get_transform", 0) : nullptr;
+
+        if (s.go && mGetAH) {
+            void* r = uo::u_call(s.go, mGetAH, nullptr);
+            int ah = r ? (*(uint8_t*)((char*)r + 16) ? 1 : 0) : -1;
+            void* r2 = mGetAS ? uo::u_call(s.go, mGetAS, nullptr) : nullptr;
+            int as = r2 ? (*(uint8_t*)((char*)r2 + 16) ? 1 : 0) : -1;
+            GLOG("[SCENE] modelGO activeInHierarchy=%d activeSelf=%d", ah, as);
+        }
+
+        void* cur = modelRoot;
+        for (int depth = 0; depth < 4 && cur; depth++) {
+            void* go = mGetGO ? uo::u_call(cur, mGetGO, nullptr) : nullptr;
+            const char* nm = (go && mGetName) ? (const char*)uo::u_call(go, mGetName, nullptr) : nullptr;
+            int ah = -1, lay = -1;
+            if (go && mGetAH) {
+                void* r = uo::u_call(go, mGetAH, nullptr);
+                if (r) ah = *(uint8_t*)((char*)r + 16) ? 1 : 0;
+            }
+            if (go && mGetLayer) {
+                void* r = uo::u_call(go, mGetLayer, nullptr);
+                if (r) lay = *(int32_t*)((char*)r + 16);
+            }
+            GLOG("[SCENE] parent[%d] name='%s' activeInHierarchy=%d layer=%d",
+                 depth, nm ? nm : "?", ah, lay);
+            cur = mGetParent ? uo::u_call(cur, mGetParent, nullptr) : nullptr;
+        }
+
+        void* camCls2 = uo::u_class("UnityEngine", "Camera");
+        void* mAll  = camCls2 ? uo::u_method(camCls2, "get_allCameras", 0) : nullptr;
+        void* mMask = camCls2 ? uo::u_method(camCls2, "get_cullingMask", 0) : nullptr;
+        void* mPos  = trCls2 ? uo::u_method(trCls2, "get_position", 0) : nullptr;
+        if (mAll) {
+            void* arr = uo::u_call(nullptr, mAll, nullptr);
+            if (arr) {
+                int32_t n = *(int32_t*)((char*)arr + 24);
+                GLOG("[SCENE] allCameras n=%d (只列前 8 个)", n);
+                for (int i = 0; i < n && i < 8; i++) {
+                    void* cam = *(void**)((char*)arr + 32 + (size_t)i * 8);
+                    if (!cam) continue;
+                    const char* nm = mGetName ? (const char*)uo::u_call(cam, mGetName, nullptr) : "?";
+                    int mask = -1;
+                    if (mMask) {
+                        void* r = uo::u_call(cam, mMask, nullptr);
+                        if (r) mask = *(int32_t*)((char*)r + 16);
+                    }
+                    float px = 0, py = 0, pz = 0;
+                    void* tr = mGetTr2 ? uo::u_call(cam, mGetTr2, nullptr) : nullptr;
+                    if (tr && mPos) {
+                        void* r = uo::u_call(tr, mPos, nullptr);
+                        if (r) { float* q = (float*)((char*)r + 16); px = q[0]; py = q[1]; pz = q[2]; }
+                    }
+                    GLOG("[SCENE] cam[%d] '%s' pos=(%.1f,%.1f,%.1f) mask=0x%08X layer10=%d",
+                         i, nm ? nm : "?", px, py, pz, mask,
+                         (mask >= 0 && (mask & (1 << 10))) ? 1 : 0);
+                }
+            }
+        }
+    }
+
     void* refNative = sourceSmr ? *(void**)((char*)sourceSmr + 16) : nullptr;
 
     // skin probe：+0x1d8 是全表唯一像对象指针的 ref-only 槽，怀疑是 m_Skin。
