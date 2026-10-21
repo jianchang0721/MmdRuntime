@@ -1121,9 +1121,23 @@ static void tick_body() {
         pthread_mutex_lock(&g_cfgMtx);
         s = g_ui.modelScale; ox = g_ui.offX; oy = g_ui.offY; oz = g_ui.offZ;
         pthread_mutex_unlock(&g_cfgMtx);
-        // UI modelScale is a multiplier (default 1.0); absolute base is 0.08.
-        // Without this the slider at 3.0 sets world scale 3.0 -> giant model.
-        const float kBaseScale = 0.08f;
+        // UI modelScale is a multiplier (default 1.0); absolute base is 1.7/modelH.
+        // ModelMod 的公式：k = 1.7 / (modelH * parentLossyScale)
+        // 1.7 = 游戏角色身高（米），modelH = PMX 模型高度（单位）
+        // 父级 lossyScale 由 self_smr 里读出来打日志，这里用 UI 滑条间接补偿。
+        static float kBaseScale = 0.0f;   // 第一次进来算一次
+        if (kBaseScale <= 0.0f && g_model.bones.size() > 0 && !g_model.verts.empty()) {
+            float minY = 1e9f, maxY = -1e9f;
+            for (const auto& v : g_model.verts) {
+                if (v.pos[1] < minY) minY = v.pos[1];
+                if (v.pos[1] > maxY) maxY = v.pos[1];
+            }
+            float modelH = maxY - minY;
+            if (modelH < 0.0001f) modelH = 1.0f;
+            kBaseScale = 1.7f / modelH;
+            L("[MODEL] base scale = 1.7 / %.3f = %.5f", modelH, kBaseScale);
+        }
+        if (kBaseScale <= 0.0f) kBaseScale = 0.084f;   // 兜底：20.2 高模型
         float absScale = kBaseScale * (s > 0.0f ? s : 1.0f);
         static float ls = -1.0f, lx = 1e9f, ly = 1e9f, lz = 1e9f;
         if (fabsf(absScale - ls) > 1e-5f || fabsf(ox - lx) > 1e-4f ||

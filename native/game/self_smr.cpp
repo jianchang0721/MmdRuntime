@@ -21,6 +21,9 @@ namespace game {
 
 namespace {
 
+// boxed Vector3 的 value 在 +0x10（il2cpp 装箱布局）
+struct Vec3 { float x, y, z; };
+
 // 按「名字 + 参数个数 + 第一个参数类名」筛重载（AddComponent / set_sharedMaterials 都有多个）
 const MethodInfo* find_method_typed(void* klass, const char* name, int nparams, const char* p0) {
     if (!klass) return nullptr;
@@ -95,6 +98,39 @@ bool create_self_smr(void* modelTransform,
             uo::u_call_void(go, (void*)mSetLayer, a);
         }
         GLOG("[SELF] layer copied: %d (setLayer=%p)", layer, (void*)mSetLayer);
+    }
+
+    // ---- 拷贝 layer 后：朝向 + 父级缩放反算（ModelMod 2265~2312 行原样搬）----
+    // 两条都是「看不见」的真凶，ModelMod 里踩过：
+    //   ① MMD/glTF 多数面朝 -Z，Unity 是 +Z，不转 180 就背对镜头
+    //   ② 「角色节点自带的缩放不是 1（很多游戏模型单位是厘米，节点缩放 0.01），
+    //       直接写 localScale=20 会被父级再乘一次，直接缩到看不见」
+    // 复用上面 layer 那段已经拿到的 Transform 类指针
+    Il2CppClass* trCls2 = (Il2CppClass*)uo::u_class("UnityEngine", "Transform");
+    if (trCls2) {
+        // 面朝 +Z（绕 Y 转 180）
+        const MethodInfo* mSetRot = (const MethodInfo*)uo::u_method(trCls2, "set_localRotation", 1);
+        if (mSetRot) {
+            struct { float x, y, z, w; } q = { 0.0f, 1.0f, 0.0f, 0.0f };
+            void* a[1] = { &q };
+            uo::u_call_void(tr, (void*)mSetRot, a);
+            GLOG("[SELF] rotated 180 on Y (MMD faces -Z, Unity faces +Z)");
+        }
+
+        // 读父级 lossyScale，用来把「绝对缩放」换算成「localScale」
+        // 不然父级一乘，0.08 直接变 0.0008，缩到看不见
+        const MethodInfo* mLossy = (const MethodInfo*)uo::u_method(trCls2, "get_lossyScale", 0);
+        float psc = 1.0f;
+        if (modelTransform && mLossy) {
+            // modelTransform 就是挂载点，直接读它自己的 lossyScale
+            void* ls = uo::u_call(modelTransform, (void*)mLossy, nullptr);
+            if (ls) {
+                Vec3 v = *(Vec3*)((char*)ls + 16);
+                GLOG("[SELF] parent lossyScale = %.6f %.6f %.6f", v.x, v.y, v.z);
+                if (v.x > 0.00001f) psc = v.x;
+            }
+        }
+        GLOG("[SELF] parent scale factor psc=%.6f", psc);
     }
 
     // ---- 2) AddComponent(SkinnedMeshRenderer 的 Type) ----

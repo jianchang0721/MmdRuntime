@@ -102,14 +102,25 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     // PMX 模型高约 20 单位，游戏角色约 1.5~2，不缩放就是个巨人。
     // 骨骼树也挂在这个节点下，才能跟着一起缩放；否则骨骼在场景根按 PMX 绝对坐标
     // 摆着、模型缩了骨骼没缩，蒙皮直接错位。
-    const float kModelScale = 0.08f;
-    // 位置：先抬到头顶（0,2,0），跟 ModelMod 的 spawn_cube_for 一样，
-    // 不然埋在角色模型里根本看不出来。确认渲染通了再往下调。
-    void* modelRoot = uo::create_node("MMDModel", roleRoot, 0.0f, 2.0f, 0.0f);
+    // 缩放不再写死 0.08。ModelMod 的公式：
+    //   k = 1.7 / (modelH * parentLossyScale)
+    // modelH 从 PMX 顶点的 bboxY 算，父级缩放在 self_smr 里读出来打日志。
+    // 这里先用 bboxY 算 modelH，psc 由 UI 侧的缩放滑条间接控制（默认 1.0）。
+    float minY = 1e9f, maxY = -1e9f;
+    for (const auto& v : model.verts) {
+        if (v.pos[1] < minY) minY = v.pos[1];
+        if (v.pos[1] > maxY) maxY = v.pos[1];
+    }
+    float modelH = maxY - minY;
+    if (modelH < 0.0001f) modelH = 1.0f;
+    LLOG("[LOADER] bboxY %.3f .. %.3f (h=%.3f)", minY, maxY, modelH);
+
+    // 位置默认 (0, 2.4, 0)：ModelMod 用 2.4，先站到头顶上，确认看得见再调
+    void* modelRoot = uo::create_node("MMDModel", roleRoot, 0.0f, 2.4f, 0.0f);
     if (!modelRoot) { set_err(out, "create model root failed"); return false; }
-    uo::set_local_scale(modelRoot, kModelScale, kModelScale, kModelScale);
     out.modelRoot = modelRoot;
-    LLOG("[LOADER] model root=%p parent=%p scale=%.3f", modelRoot, roleRoot, kModelScale);
+    LLOG("[LOADER] model root=%p parent=%p modelH=%.3f (缩放基准 1.7/modelH)",
+         modelRoot, roleRoot, modelH);
 
     // ---- ③ 骨骼树（挂到模型根下）----
     if (!out.skeleton.build(model, modelRoot)) {
