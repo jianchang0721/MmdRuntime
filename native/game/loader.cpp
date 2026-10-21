@@ -110,7 +110,7 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     mmd::BuiltMesh bm;
     // A 方案：true = 用 3 顶点最小网格（定位换 mesh 后崩的原因）
     //          false = 完整 PMX mesh
-    const bool kUseSimpleMesh = true;
+    const bool kUseSimpleMesh = false;   // C 方案最小验证已过，换回完整 PMX mesh
     bool meshOk = kUseSimpleMesh
                 ? mmd::build_simple_mesh(out.skeleton, bm)
                 : mmd::build_mesh(model, out.skeleton, bm);
