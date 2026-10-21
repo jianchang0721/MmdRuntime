@@ -351,6 +351,26 @@ bool create_self_smr(void* modelTransform,
         }
     }
 
+    // ---- 7) 试验：共享 ref 的 +0x1d8（疑似 m_Skin）----
+    // build-108 实测：self 该槽为 0、ref 非零，且 self 永远 isVisible=0。
+    // 先把 ref 的指针抄过来，看 isVisible 变不变、崩不崩：
+    //   变 1 且出画面 -> 共享可行（先跑通链路）
+    //   变 1 但乱    -> 骨骼数不匹配，需要自己构造 Skin
+    //   崩           -> 不能共享
+    {
+        uint8_t* rn = sourceSmr ? (uint8_t*)obj_native(sourceSmr) : nullptr;
+        uint8_t* sn = (uint8_t*)out.native;
+        if (rn) {
+            uint64_t rv = *(uint64_t*)(rn + 0x1d8);
+            if (rv) {
+                *(uint64_t*)(sn + 0x1d8) = rv;
+                GLOG("[SELF] +0x1d8 <- ref 0x%llx (共享 skin 试验)", (unsigned long long)rv);
+            } else {
+                GLOG("[SELF] +0x1d8 ref 也是 0，跳过");
+            }
+        }
+    }
+
     dump_visibility(out, sourceSmr, modelTransform);
     GLOG("[SELF] done: meshId=%d bones=%d mats=%d", meshId, boneCount, matCount);
     return true;
