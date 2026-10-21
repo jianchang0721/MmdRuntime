@@ -249,7 +249,7 @@ bool bone_driver_init(const mmd::Model& model, const mmd::Skeleton& skeleton) {
 void bone_driver_bind_game_bones(void** gameBoneTransforms, int count) {
     if (!g_driver.initialized) return;
     
-    DLOG("[DRIVER] binding %d game bones", count);
+    DLOG("[DRIVER] binding %d game bones (ptr)", count);
     g_driver.gameBones.resize(count);
     
     for (int i = 0; i < count; i++) {
@@ -275,6 +275,56 @@ void bone_driver_bind_game_bones(void** gameBoneTransforms, int count) {
     }
     
     DLOG("[DRIVER] mapped %d bones", g_driver.mmdBoneCount);
+}
+
+void bone_driver_bind_game_bones_by_id(int32_t* gameBoneIds, int count) {
+    if (!g_driver.initialized) return;
+    
+    DLOG("[DRIVER] binding %d game bones by id", count);
+    g_driver.gameBones.resize(count);
+    
+    // 用 il2cpp API 把 instanceID 转成 Transform 指针
+    // il2cpp_object_new 不行，得用 Object.FindObjectFromInstanceID
+    static void* mFindObject = nullptr;
+    if (!mFindObject) {
+        void* objCls = uo::u_class("UnityEngine", "Object");
+        if (objCls) {
+            mFindObject = uo::u_method(objCls, "FindObjectFromInstanceID", 1);
+        }
+    }
+    
+    for (int i = 0; i < count; i++) {
+        GameBone& gb = g_driver.gameBones[i];
+        gb.instanceId = gameBoneIds[i];
+        gb.valid = false;
+        
+        if (mFindObject && gb.instanceId != 0) {
+            int32_t id = gb.instanceId;
+            void* a[1] = { &id };
+            void* obj = uo::u_call(nullptr, mFindObject, a);
+            if (obj) {
+                gb.transform = obj;
+                gb.valid = true;
+                
+                // 读 bind 变换
+                float pos[3], rot[4], scale[3];
+                if (read_transform(gb.transform, pos, rot, scale)) {
+                    memcpy(gb.bindPos, pos, 12);
+                    memcpy(gb.bindRot, rot, 16);
+                    memcpy(gb.bindScale, scale, 12);
+                }
+            }
+        }
+    }
+    
+    // 简单映射：按索引一一对应
+    for (int i = 0; i < g_driver.mmdBoneCount && i < count; i++) {
+        g_driver.boneMap[i] = i;
+    }
+    
+    int validCount = 0;
+    for (auto& gb : g_driver.gameBones) if (gb.valid) validCount++;
+    DLOG("[DRIVER] mapped %d bones, %d valid", g_driver.mmdBoneCount, validCount);
 }
 
 void bone_driver_update() {

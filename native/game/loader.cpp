@@ -207,10 +207,10 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         if (smr.native) {
             uint8_t* base = (uint8_t*)smr.native;
             int32_t boneSize = *(int32_t*)(base + 0x1f0);
-            void* boneData = *(void**)(base + 0x1e0);
-            if (boneData && boneSize > 0) {
-                void** gameBones = (void**)boneData;
-                game::bone_driver_bind_game_bones(gameBones, boneSize);
+            int32_t* boneIds = *(int32_t**)(base + 0x1e0);
+            if (boneIds && boneSize > 0) {
+                // int32 array, not pointers
+                game::bone_driver_bind_game_bones_by_id(boneIds, boneSize);
                 LLOG("[LOADER] bone driver bound %d game bones", boneSize);
             }
         }
