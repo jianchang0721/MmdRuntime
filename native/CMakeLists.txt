@@ -30,6 +30,7 @@ add_library(mmdruntime SHARED
     game/self_smr.cpp
     game/loader.cpp
     game/camera_ctrl.cpp
+    game/render_probe.cpp
 )
 
 target_include_directories(mmdruntime PRIVATE

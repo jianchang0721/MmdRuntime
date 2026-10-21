@@ -11,6 +11,7 @@
 
 #include "bone_hook.h"
 #include "self_smr.h"
+#include "render_probe.h"
 #include "mmd/material.h"
 #include "mmd/texture.h"
 #include "unity/il2cpp_api.h"
@@ -192,6 +193,11 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         out.ok = true;
         LLOG("[LOADER] SELF SMR OK: go=%p tr=%p meshId=%d bones=%d mats=%d",
              self.go, self.tr, self.meshId, self.bones, matsN);
+        
+        // 诊断：打印自建 SMR 状态
+        game::probe_self_smr_state(self, bm.mesh);
+        game::probe_init();
+        
         return true;
     }
 
