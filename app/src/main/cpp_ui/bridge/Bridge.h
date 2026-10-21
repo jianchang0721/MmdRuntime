@@ -48,7 +48,7 @@ struct BridgeModel {
     std::string storageDir;
     bool  showBounds = false;
     float offsetX = 0.0f;
-    float offsetY = 0.0f;
+    float offsetY = 2.0f;   // 默认抬到头顶（跟游戏侧 UiCmd 默认一致）
     float offsetZ = 0.0f;
 
     // ---- Game -> UI ----

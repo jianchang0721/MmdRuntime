@@ -1121,13 +1121,17 @@ static void tick_body() {
         pthread_mutex_lock(&g_cfgMtx);
         s = g_ui.modelScale; ox = g_ui.offX; oy = g_ui.offY; oz = g_ui.offZ;
         pthread_mutex_unlock(&g_cfgMtx);
+        // UI modelScale is a multiplier (default 1.0); absolute base is 0.08.
+        // Without this the slider at 3.0 sets world scale 3.0 -> giant model.
+        const float kBaseScale = 0.08f;
+        float absScale = kBaseScale * (s > 0.0f ? s : 1.0f);
         static float ls = -1.0f, lx = 1e9f, ly = 1e9f, lz = 1e9f;
-        if (fabsf(s - ls) > 1e-4f || fabsf(ox - lx) > 1e-4f ||
+        if (fabsf(absScale - ls) > 1e-5f || fabsf(ox - lx) > 1e-4f ||
             fabsf(oy - ly) > 1e-4f || fabsf(oz - lz) > 1e-4f) {
-            uo::set_local_scale(g_modelRoot, s, s, s);
+            uo::set_local_scale(g_modelRoot, absScale, absScale, absScale);
             uo::set_local_position(g_modelRoot, ox, oy, oz);
-            ls = s; lx = ox; ly = oy; lz = oz;
-            L("[MODEL] apply scale=%.3f pos=(%.2f, %.2f, %.2f)", s, ox, oy, oz);
+            ls = absScale; lx = ox; ly = oy; lz = oz;
+            L("[MODEL] apply x%.2f -> %.4f pos=(%.2f, %.2f, %.2f)", s, absScale, ox, oy, oz);
         }
     }
 
