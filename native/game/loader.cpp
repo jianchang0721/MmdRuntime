@@ -37,6 +37,13 @@ struct GcGuard {
     ~GcGuard() {
         if (on && g_api.gc_enable) g_api.gc_enable();
     }
+    // 中途恢复 GC。
+    // build-74 实测：GC 从加载开始一直禁用，到材质阶段 Shader.Find 直接卡死
+    // （只分配不回收，分配器开始等 GC，而 GC 永远等不到 safepoint）。
+    // 所以只禁用到「Mesh + 贴图大数组分配」结束，材质/Shader 阶段必须放开。
+    void enable_now() {
+        if (on && g_api.gc_enable) { g_api.gc_enable(); on = false; }
+    }
 };
 
 void set_err(LoadResult& out, const char* msg) {
@@ -115,6 +122,11 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     mmd::TextureSet tex;
     mmd::load_textures(model, pmxPath, tex, logf_cb);
     out.textures = tex.loaded;
+
+    // 大块分配到此结束（Mesh 21804 顶点 + 8 张贴图 16MB 数组）。
+    // 赶紧把 GC 放回去，否则后面的 Shader.Find / Material..ctor 必死锁。
+    gcGuard.enable_now();
+    LLOG("[LOADER] GC restored before materials");
 
     mmd::MaterialSet mats;
     if (mmd::build_materials(model, tex, mats, logf_cb)) {
