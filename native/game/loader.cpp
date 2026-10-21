@@ -27,10 +27,16 @@ void set_err(LoadResult& out, const char* msg) {
 
 // mmd 层要的是 printf 风格回调，LLOG 是宏传不了函数指针，包一层
 void logf_cb(const char* fmt, ...) {
+    // 注意：这里必须走 logsink（写文件 + fflush + fsync），
+    // 只打 __android_log_vprint 的话，崩溃后文件日志里什么都看不到。
+    // build-67 就是因此卡在「mesh 建完然后一片空白」——[TEX] 全进了 logcat，
+    // 而 logcat 早被 chatty 限流/滚掉了。
+    char buf[512];
     va_list ap;
     va_start(ap, fmt);
-    __android_log_vprint(ANDROID_LOG_INFO, LTAG, fmt, ap);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
+    LLOG("%s", buf);
 }
 }
 
