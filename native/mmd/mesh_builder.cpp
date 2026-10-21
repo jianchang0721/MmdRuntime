@@ -284,7 +284,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                 d[i * 3 + 1] = v.nrm[1];
                 d[i * 3 + 2] = v.nrm[2];
             }
-            void* a[1] = { &arr };
+            void* a[1] = { arr };
             uo::u_call_void(mesh, mc.mSetNormals, a);
         }
     }
@@ -300,7 +300,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                 d[i * 2 + 0] = v.uv[0];
                 d[i * 2 + 1] = v.uv[1];
             }
-            void* a[1] = { &arr };
+            void* a[1] = { arr };
             uo::u_call_void(mesh, mc.mSetUV, a);
         }
     }
@@ -359,7 +359,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
             if (!arr) { MLOG("[MESH] triangles array alloc failed"); return false; }
             int32_t* d = (int32_t*)uo::u_array_data(arr);
             for (size_t i = 0; i < nf; i++) d[i] = model.faceVertex[i];
-            void* a[1] = { &arr };
+            void* a[1] = { arr };
             uo::u_call_void(mesh, mc.mSetTriangles, a);
             out.subMeshes = 1;
             MLOG("[MESH] fallback to single submesh (materials=%zu)", model.materials.size());
@@ -388,7 +388,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                     w[0] = 1.0f;
                 }
             }
-            void* a[1] = { &arr };
+            void* a[1] = { arr };
             uo::u_call_void(mesh, mc.mSetBoneWeights, a);
         }
     } else {
@@ -416,7 +416,7 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                 m[13] = -n.worldPos[1];
                 m[14] = -n.worldPos[2];
             }
-            void* a[1] = { &arr };
+            void* a[1] = { arr };
             uo::u_call_void(mesh, mc.mSetBindposes, a);
         }
     } else {
