@@ -225,15 +225,33 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                              ? (int)g_api.class_array_element_size(ec) : -1);
                 }
                 // 先反问一句：mesh 对象到底活没活。
-                // get_vertexCount 是纯读，崩了就是 mesh 本身无效（object_new+ctor 看着成功
-                // 但 native Mesh 没建起来）；能返回 0 就说明 mesh 是好的，问题在传参。
+                // get_vertexCount 是纯读，崩了就是 mesh 本身无效；能返回 0 就说明 mesh
+                // 是好的，问题在传参。build-64 实测返回 0，于是罪名落到传参上。
                 if (mc.mGetVertexCount) {
                     void* r = uo::u_call(mesh, mc.mGetVertexCount, nullptr);
                     int32_t vc = r ? *(int32_t*)((char*)r + 16) : -12345;
                     MLOG("[MESH] probe: get_vertexCount()=%d", vc);
                 }
+
+                // ---- 参数到底是 Vector3[] 还是 Vector3[]& ----
+                // 不再猜：直接读 Il2CppType 的 byref 位（+11 字节 bit6）。
+                // 值传递（byref=0）：args[0] = 数组对象指针
+                // 引用传递（byref=1）：args[0] = 指向数组指针的指针
+                bool byref = false;
+                {
+                    const Il2CppType* pt = nullptr;
+                    if (g_api.method_get_param)
+                        pt = (const Il2CppType*)g_api.method_get_param(
+                                 (const MethodInfo*)mc.mSetVertices, 0);
+                    if (pt) {
+                        uint8_t tail = ((const uint8_t*)pt)[11];
+                        byref = (tail & 0x40) != 0;
+                        MLOG("[MESH] set_vertices param0 typeByte=%02x byref=%d",
+                             tail, (int)byref);
+                    }
+                }
                 MLOG("[MESH] probe: set_vertices x64...");
-                void* pa[1] = { &probe };
+                void* pa[1] = { byref ? (void*)&probe : (void*)probe };
                 uo::u_call(mesh, mc.mSetVertices, pa);
                 MLOG("[MESH] probe: x64 survived");
             }
@@ -242,7 +260,14 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
         MLOG("[MESH] step1/8 uploading vertices nv=%zu arr=%p...", nv, arr);
         // Unity 2018 的 set_vertices 是 set_vertices(Vector3[]&)，
         // runtime_invoke 要的是「指向数组引用的指针」
-        void* a[1] = { &arr };
+        bool byrefAll = false;
+        {
+            const Il2CppType* pt = g_api.method_get_param
+                ? (const Il2CppType*)g_api.method_get_param((const MethodInfo*)mc.mSetVertices, 0)
+                : nullptr;
+            if (pt) byrefAll = ((((const uint8_t*)pt)[11]) & 0x40) != 0;
+        }
+        void* a[1] = { byrefAll ? (void*)&arr : (void*)arr };
         uo::u_call_void(mesh, mc.mSetVertices, a);
         MLOG("[MESH] step1/8 vertices done");
     }
