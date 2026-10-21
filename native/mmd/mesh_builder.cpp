@@ -35,7 +35,8 @@ struct MeshClasses {
     void* mSetNormals = nullptr;
     void* mSetUV = nullptr;
     void* mSetTriangles = nullptr;
-    void* mSetTrianglesSub = nullptr;   // SetTriangles(int[], int submesh)
+    void* mSetTrianglesSub = nullptr;   // SetTriangles(int[], int, bool)（Unity 2018 只有 3 参版本）
+    void* mGetSubMeshCount = nullptr;   // get_subMeshCount，用来验证 setter 真生效
     void* mSetSubMeshCount = nullptr;   // set_subMeshCount(int)
     void* mSetBoneWeights = nullptr;
     void* mSetBindposes = nullptr;
@@ -113,7 +114,10 @@ bool init_mesh_classes(MeshClasses& mc) {
     mc.mSetTriangles    = uo::u_method(mc.meshCls, "set_triangles", 1);
     mc.mSetSubMeshCount = uo::u_method(mc.meshCls, "set_subMeshCount", 1);
     // SetTriangles 有 int[] 和 List<int> 两个双参重载，得按第一个参数类型筛
-    mc.mSetTrianglesSub = find_int_array_method(mc.meshCls, "SetTriangles", 2);
+    // build-73 实测重载列表：3参(int[],int,bool) / 4参 / 2参(List) / 3参(List) / 4参(List)
+    // **没有** 2 参 int[] 版本，所以按 3 参找。
+    mc.mSetTrianglesSub = find_int_array_method(mc.meshCls, "SetTriangles", 3);
+    mc.mGetSubMeshCount = uo::u_method(mc.meshCls, "get_subMeshCount", 0);
     mc.mSetBoneWeights  = uo::u_method(mc.meshCls, "set_boneWeights", 1);
     mc.mSetBindposes    = uo::u_method(mc.meshCls, "set_bindposes", 1);
     mc.mUpload          = uo::u_method(mc.meshCls, "UploadMeshData", 1);
@@ -348,8 +352,19 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
         bool multiOk = false;
         if (mc.mSetSubMeshCount && mc.mSetTrianglesSub && subs.size() > 1) {
             int32_t sn = (int32_t)subs.size();
+            int32_t before = -1;
+            if (mc.mGetSubMeshCount) {
+                void* r = uo::u_call(mesh, mc.mGetSubMeshCount, nullptr);
+                if (r) before = *(int32_t*)((char*)r + 16);
+            }
             void* an[1] = { &sn };
             uo::u_call_void(mesh, mc.mSetSubMeshCount, an);
+            if (mc.mGetSubMeshCount) {
+                void* r = uo::u_call(mesh, mc.mGetSubMeshCount, nullptr);
+                int32_t after = r ? *(int32_t*)((char*)r + 16) : -1;
+                MLOG("[MESH] subMeshCount %d -> %d (want %d) %s",
+                     before, after, sn, after == sn ? "OK" : "SETTER-FAILED");
+            }
 
             int okCount = 0;
             for (size_t si = 0; si < subs.size(); si++) {
@@ -361,11 +376,13 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                     d[k] = model.faceVertex[(size_t)(r.start + k)];
                 }
                 int32_t idx = (int32_t)si;
-                // arr 是 int[]（引用类型）→ 传对象指针；idx 是 int32 → 传地址
-                // （之前写成 { &arr, &idx }，arr 被当栈地址，SetTriangles 静默失败，
-                //  这就是 25 个子网格 fallback 成 1 的根因）
-                void* a2[2] = { arr, &idx };
-                uo::u_call_void(mesh, mc.mSetTrianglesSub, a2);
+                // Unity 2018 的实际签名是 SetTriangles(int[], int, bool)：
+                //   arr  引用类型 → 传对象指针
+                //   idx   int32    → 传地址
+                //   calc  bool     → 传地址（uint8）
+                uint8_t calcBounds = 1;
+                void* a3[3] = { arr, &idx, &calcBounds };
+                uo::u_call_void(mesh, mc.mSetTrianglesSub, a3);
                 okCount++;
             }
             multiOk = okCount == (int)subs.size();
