@@ -528,6 +528,42 @@ bool create_self_smr(void* modelTransform,
         }
     }
 
+    // ===== 让 Unity 自己重建渲染/蒙皮缓存 =====
+    // Renderer.enabled / GameObject.SetActive 的 false->true 会触发 OnDisable/OnEnable，
+    // Unity 的 OnEnable 里会重建渲染状态（可能包含 BuildSkin）。
+    // 此时 m_Mesh / m_Bones / m_Materials 都已经写好，正是重建的时机。
+    {
+        auto rebuild_by_enable = [&]() {
+            void* rCls = uo::u_class("UnityEngine", "Renderer");
+            void* mSetEn = rCls ? uo::u_method(rCls, "set_enabled", 1) : nullptr;
+            if (mSetEn) {
+                uint8_t off = 0, on = 1;
+                void* a[1] = { &off };
+                uo::u_call_void(out.smr, mSetEn, a);
+                void* b[1] = { &on };
+                uo::u_call_void(out.smr, mSetEn, b);
+                GLOG("[SELF] enabled false->true 已切");
+            }
+
+            void* goCls3 = uo::u_class("UnityEngine", "GameObject");
+            void* mSetActive = goCls3 ? uo::u_method(goCls3, "SetActive", 1) : nullptr;
+            if (mSetActive && out.go) {
+                uint8_t off = 0, on = 1;
+                void* a[1] = { &off };
+                uo::u_call_void(out.go, mSetActive, a);
+                void* b[1] = { &on };
+                uo::u_call_void(out.go, mSetActive, b);
+                GLOG("[SELF] SetActive false->true 已切");
+            }
+        };
+        rebuild_by_enable();
+
+        // 切完立刻读 +0x1d8，看 skin 有没有被建出来
+        uint64_t slot = *(uint64_t*)((char*)out.native + 0x1d8);
+        GLOG("[SELF] 重建后 +0x1d8 = 0x%llx %s", (unsigned long long)slot,
+             slot ? "<-- skin 被 Unity 建出来了！" : "(仍为 0)");
+    }
+
     g_selfSmrManaged = out.smr;
     g_selfSmrNative  = out.native;
 
