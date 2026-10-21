@@ -31,6 +31,7 @@ struct LoadResult {
     int  textures  = 0;     // 成功解码的贴图数
     int32_t meshId = 0;
     void* mesh = nullptr;
+    void* modelRoot = nullptr;   // MMDModel 根节点（UI 调缩放/偏移时用）
     char  error[256] = {0};
     mmd::Skeleton skeleton;   // 持有骨骼树（Transform 引用）
 };

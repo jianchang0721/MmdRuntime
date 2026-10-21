@@ -79,6 +79,7 @@ typedef struct MmdApi {
     void (*set_enable)(int on);
     void (*set_model)(const char* modelDirName);   // 游戏私有目录 models/<名字>
     void (*set_scale)(float scale);
+    void (*set_offset)(float x, float y, float z);   // 模型根节点 localPosition
     void (*cmd_rescan)(void);
     void (*cmd_reapply)(void);
     void (*cmd_unload)(void);

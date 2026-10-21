@@ -88,6 +88,7 @@ void RefreshModelList();
 void SetStorageDir(const std::string& path);
 void SetEnableReplace(bool value);
 void SetModelScale(float value);
+void SetOffset(float x, float y, float z);   // 模型根节点 localPosition
 void SetModelPath(const std::string& value);
 void SetShowBounds(bool value);
 void SetManualOffset(float x, float y, float z);

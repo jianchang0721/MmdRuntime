@@ -104,6 +104,7 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     void* modelRoot = uo::create_node("MMDModel", roleRoot, 0.0f, 2.0f, 0.0f);
     if (!modelRoot) { set_err(out, "create model root failed"); return false; }
     uo::set_local_scale(modelRoot, kModelScale, kModelScale, kModelScale);
+    out.modelRoot = modelRoot;
     LLOG("[LOADER] model root=%p parent=%p scale=%.3f", modelRoot, roleRoot, kModelScale);
 
     // ---- ③ 骨骼树（挂到模型根下）----

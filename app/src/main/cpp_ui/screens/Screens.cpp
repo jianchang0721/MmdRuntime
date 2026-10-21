@@ -349,6 +349,17 @@ void DrawRenderTab(Bridge::BridgeModel& Model) {
     }
 
     ImGui::Spacing();
+    ImGui::TextUnformatted("模型偏移（相对角色）");
+    float off[3] = { Model.offsetX, Model.offsetY, Model.offsetZ };
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::DragFloat3("##offset", off, 0.05f, -30.0f, 30.0f, "%.2f")) {
+        Model.offsetX = off[0];
+        Model.offsetY = off[1];
+        Model.offsetZ = off[2];
+        Bridge::SetOffset(off[0], off[1], off[2]);
+    }
+
+    ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
 

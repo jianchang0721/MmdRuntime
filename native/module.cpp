@@ -33,6 +33,7 @@
 #include <android/dlext.h>
 #include <android/log.h>
 #include <signal.h>
+#include <math.h>
 #include <string>
 #include <vector>
 
@@ -871,6 +872,7 @@ static volatile int  g_inTick = 0;            // 防重入
 struct UiCmd {
     int   enableReplace = 0;
     float modelScale    = 1.0f;
+    float offX = 0.0f, offY = 2.0f, offZ = 0.0f;   // 模型根节点的 localPosition
     char  activeModel[160] = {0};
     int   cmdRescan  = 0;
     int   cmdReapply = 0;
@@ -888,6 +890,7 @@ static mmd::Model        g_model;      // 解析出来的模型（常驻，别�
 static bool              g_modelLoaded = false;
 static volatile int      g_forceReparse = 0;   // API 置位，主线程消费
 static int               g_lastSmrIndex = -1;
+static void*             g_modelRoot = nullptr;   // MMDModel 根节点（UI 调缩放/偏移）
 
 // ---- 在目录里递归找 .pmx（最多 3 层） ----
 static bool find_pmx_in_dir(const char* dir, std::string& out, int depth) {
@@ -1037,6 +1040,7 @@ static bool do_load_model() {
     }
 
     g_lastSmrIndex = idx;
+    g_modelRoot = g_load.modelRoot;
     L("[LOAD] 成功: bones=%d verts=%d tris=%d submeshes=%d tex=%d mat=%d meshId=%d",
       g_load.bonesBuilt, g_load.verts, g_load.tris,
       g_load.subMeshes, g_load.textures, g_load.materials, g_load.meshId);
@@ -1117,6 +1121,22 @@ static void tick_body() {
         return;
     }
     g_ticks++;
+
+    // UI 调的缩放/偏移 —— 只在变化时调 Unity API（每帧调没必要）
+    if (g_modelRoot && g_load.ok) {
+        float s, ox, oy, oz;
+        pthread_mutex_lock(&g_cfgMtx);
+        s = g_ui.modelScale; ox = g_ui.offX; oy = g_ui.offY; oz = g_ui.offZ;
+        pthread_mutex_unlock(&g_cfgMtx);
+        static float ls = -1.0f, lx = 1e9f, ly = 1e9f, lz = 1e9f;
+        if (fabsf(s - ls) > 1e-4f || fabsf(ox - lx) > 1e-4f ||
+            fabsf(oy - ly) > 1e-4f || fabsf(oz - lz) > 1e-4f) {
+            uo::set_local_scale(g_modelRoot, s, s, s);
+            uo::set_local_position(g_modelRoot, ox, oy, oz);
+            ls = s; lx = ox; ly = oy; lz = oz;
+            L("[MODEL] apply scale=%.3f pos=(%.2f, %.2f, %.2f)", s, ox, oy, oz);
+        }
+    }
 
     // 每 2 秒看一次 tracer。被 ptrace 时我们什么都不做，
     // 因为此时任何“正好在这时发生”的行为都会成为关联证据。
@@ -1504,6 +1524,13 @@ static void api_set_scale(float s) {
     pthread_mutex_unlock(&g_cfgMtx);
 }
 
+static void api_set_offset(float x, float y, float z) {
+    pthread_mutex_lock(&g_cfgMtx);
+    g_ui.offX = x; g_ui.offY = y; g_ui.offZ = z;
+    pthread_mutex_unlock(&g_cfgMtx);
+    L("[API] set_offset(%.2f, %.2f, %.2f)", x, y, z);
+}
+
 static void api_cmd_rescan() {
     pthread_mutex_lock(&g_cfgMtx);
     g_ui.cmdRescan = 1;
@@ -1625,6 +1652,7 @@ const MmdApi* mmd_get_api(void) {
         api_set_enable,
         api_set_model,
         api_set_scale,
+        api_set_offset,
         api_cmd_rescan,
         api_cmd_reapply,
         api_cmd_unload,

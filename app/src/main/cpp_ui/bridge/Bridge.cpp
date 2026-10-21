@@ -204,6 +204,14 @@ void SetModelScale(float value) {
     if (Bind()) g_Api->set_scale(value);
 }
 
+void SetOffset(float x, float y, float z) {
+    Shared().offsetX = x;
+    Shared().offsetY = y;
+    Shared().offsetZ = z;
+    Shared().lastWriteMs = NowMs();
+    if (Bind() && g_Api->set_offset) g_Api->set_offset(x, y, z);
+}
+
 void SetModelPath(const std::string& value) {
     Shared().modelPath = value;
 }
