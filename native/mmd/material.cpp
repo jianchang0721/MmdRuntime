@@ -135,8 +135,11 @@ bool build_materials(const Model& model,
         void* mat = uo::u_new_object(mc.matCls);
         if (!mat) { if (logf) logf("[MAT] #%zu object_new failed", i); continue; }
 
-        void* a1[1] = { &shader };
+        // Shader 是引用类型：args[0] = 对象指针本身，不是 &shader
+        // （build-68 就是死在这：Material..ctor 拿到栈地址当 Shader，fault addr 0）
+        void* a1[1] = { shader };
         uo::u_call_void(mat, mc.ctorShader, a1);
+        if (logf) logf("[MAT] #%zu ctor done mat=%p", i, mat);
 
         // 贴图
         if (mc.setTexture && texName) {
@@ -145,8 +148,8 @@ bool build_materials(const Model& model,
                 t = tex.items[(size_t)m.texIndex];
             }
             if (t) {
-                // string / Texture 都是引用类型，runtime_invoke 要的是对象指针的地址
-                void* a2[2] = { &texName, &t };
+                // string / Texture 都是引用类型：直接传对象指针
+                void* a2[2] = { texName, t };
                 uo::u_call_void(mat, mc.setTexture, a2);
             }
         }
@@ -155,7 +158,8 @@ bool build_materials(const Model& model,
         if (mc.setColor && colName) {
             // Color 是值类型（struct），传栈上地址
             float col[4] = { m.diffuse[0], m.diffuse[1], m.diffuse[2], m.diffuse[3] };
-            void* a2[2] = { &colName, col };
+            // colName 是引用类型传指针，col 是值类型数组名（本身就是地址）
+            void* a2[2] = { colName, col };
             uo::u_call_void(mat, mc.setColor, a2);
         }
 
