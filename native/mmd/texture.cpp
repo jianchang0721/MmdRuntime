@@ -77,6 +77,7 @@ bool init_tex_classes(TexClasses& tc, void (*logf)(const char*, ...)) {
 bool read_file(const char* path, std::vector<unsigned char>& out) {
     FILE* f = fopen(path, "rb");
     if (!f) return false;
+    // 日志：文件是否真的打开（build-69 崩在 read 与 decode 之间，先分清）
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
     long n = ftell(f);
     if (n <= 0 || n > 64 * 1024 * 1024) { fclose(f); return false; }
@@ -181,10 +182,13 @@ bool load_textures(const Model& model,
             if (logf) logf("[TEX] #%zu MISSING %s", i, full.c_str());
             continue;
         }
+        if (logf) logf("[TEX] #%zu read %zu bytes", i, raw.size());
 
         int w = 0, h = 0, comp = 0;
         unsigned char* px = stbi_load_from_memory(raw.data(), (int)raw.size(),
                                                   &w, &h, &comp, 4);
+        if (logf) logf("[TEX] #%zu decode px=%p w=%d h=%d comp=%d",
+                       i, (void*)px, w, h, comp);
         if (!px || w <= 0 || h <= 0) {
             out.failed++;
             if (logf) logf("[TEX] #%zu DECODE FAIL %s (comp=%d)", i, full.c_str(), comp);
