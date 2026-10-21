@@ -111,7 +111,8 @@ void* make_texture(const TexClasses& tc,
         void* arr = uo::u_new_array(tc.elemByte, bytes);
         if (arr) {
             memcpy(uo::u_array_data(arr), rgba, bytes);
-            void* a1[1] = { &arr };
+            // 数组参数是值传递（和 set_vertices 同一个坑）：args[0] = 数组对象指针
+            void* a1[1] = { arr };
             uo::u_call_void(tex, tc.loadRaw, a1);
             uploaded = true;
         }
@@ -122,7 +123,7 @@ void* make_texture(const TexClasses& tc,
         if (arr) {
             // Color32 内存布局：r,g,b,a 四个字节，跟 RGBA8888 一致
             memcpy(uo::u_array_data(arr), rgba, (size_t)w * (size_t)h * 4);
-            void* a1[1] = { &arr };
+            void* a1[1] = { arr };
             uo::u_call_void(tex, tc.setPix32, a1);
             uploaded = true;
         }
@@ -155,8 +156,10 @@ bool load_textures(const Model& model,
         return false;
     }
 
+    if (logf) logf("[TEX] enter: %zu textures, init classes...", model.textures.size());
     TexClasses tc;
     if (!init_tex_classes(tc, logf)) return false;
+    if (logf) logf("[TEX] classes ok");
 
     const std::string dir = dir_of(pmxPath);
     if (logf) logf("[TEX] base dir = %s, %zu textures", dir.c_str(), model.textures.size());
