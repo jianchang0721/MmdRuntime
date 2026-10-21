@@ -100,39 +100,6 @@ bool create_self_smr(void* modelTransform,
         GLOG("[SELF] layer copied: %d (setLayer=%p)", layer, (void*)mSetLayer);
     }
 
-    // ---- 拷贝 layer 后：朝向 + 父级缩放反算（ModelMod 2265~2312 行原样搬）----
-    // 两条都是「看不见」的真凶，ModelMod 里踩过：
-    //   ① MMD/glTF 多数面朝 -Z，Unity 是 +Z，不转 180 就背对镜头
-    //   ② 「角色节点自带的缩放不是 1（很多游戏模型单位是厘米，节点缩放 0.01），
-    //       直接写 localScale=20 会被父级再乘一次，直接缩到看不见」
-    // 复用上面 layer 那段已经拿到的 Transform 类指针
-    Il2CppClass* trCls2 = (Il2CppClass*)uo::u_class("UnityEngine", "Transform");
-    if (trCls2) {
-        // 面朝 +Z（绕 Y 转 180）
-        const MethodInfo* mSetRot = (const MethodInfo*)uo::u_method(trCls2, "set_localRotation", 1);
-        if (mSetRot) {
-            struct { float x, y, z, w; } q = { 0.0f, 1.0f, 0.0f, 0.0f };
-            void* a[1] = { &q };
-            uo::u_call_void(tr, (void*)mSetRot, a);
-            GLOG("[SELF] rotated 180 on Y (MMD faces -Z, Unity faces +Z)");
-        }
-
-        // 读父级 lossyScale，用来把「绝对缩放」换算成「localScale」
-        // 不然父级一乘，0.08 直接变 0.0008，缩到看不见
-        const MethodInfo* mLossy = (const MethodInfo*)uo::u_method(trCls2, "get_lossyScale", 0);
-        float psc = 1.0f;
-        if (modelTransform && mLossy) {
-            // modelTransform 就是挂载点，直接读它自己的 lossyScale
-            void* ls = uo::u_call(modelTransform, (void*)mLossy, nullptr);
-            if (ls) {
-                Vec3 v = *(Vec3*)((char*)ls + 16);
-                GLOG("[SELF] parent lossyScale = %.6f %.6f %.6f", v.x, v.y, v.z);
-                if (v.x > 0.00001f) psc = v.x;
-            }
-        }
-        GLOG("[SELF] parent scale factor psc=%.6f", psc);
-    }
-
     // ---- 2) AddComponent(SkinnedMeshRenderer 的 Type) ----
     Il2CppClass* goCls = (Il2CppClass*)uo::u_class("UnityEngine", "GameObject");
     const MethodInfo* mAdd = find_method_typed(goCls, "AddComponent", 1, "Type");
@@ -177,11 +144,72 @@ bool create_self_smr(void* modelTransform,
     GLOG("[SELF] bones: data=%p size=%d cap(odd)=%lld —— 析构不释放我们的内存",
          (void*)newIds, boneCount, (long long)((int64_t)boneCount | 1));
 
+    // ---- 3b) 朝向 + 父级缩放（ModelMod 2265~2312 原样搬）----
+    // ① MMD/glTF 多数面朝 -Z，Unity 是 +Z，不转 180 就背对镜头
+    // ② 父级缩放不是 1 时，localScale 会被再乘一次 —— 必须读出来反算
+    {
+        Il2CppClass* t2 = (Il2CppClass*)uo::u_class("UnityEngine", "Transform");
+        if (t2) {
+            const MethodInfo* mSetRot = (const MethodInfo*)uo::u_method(t2, "set_localRotation", 1);
+            if (mSetRot) {
+                struct { float x, y, z, w; } q = { 0.0f, 1.0f, 0.0f, 0.0f };
+                void* a[1] = { &q };
+                uo::u_call_void(tr, (void*)mSetRot, a);
+                GLOG("[SELF] rotated 180 on Y");
+            }
+            const MethodInfo* mLossy = (const MethodInfo*)uo::u_method(t2, "get_lossyScale", 0);
+            if (mLossy) {
+                // 读的是「父级」的 lossyScale：先拿 parent 再读
+                const MethodInfo* mParent = (const MethodInfo*)uo::u_method(t2, "get_parent", 0);
+                void* parent = (tr && mParent) ? uo::u_call(tr, (void*)mParent, nullptr) : nullptr;
+                void* ls = parent ? uo::u_call(parent, (void*)mLossy, nullptr) : nullptr;
+                if (ls) {
+                    Vec3 v = *(Vec3*)((char*)ls + 16);
+                    GLOG("[SELF] parent lossyScale = %.6f %.6f %.6f (parent=%p)",
+                         v.x, v.y, v.z, parent);
+                } else {
+                    GLOG("[SELF] parent lossyScale 读取失败（parent=%p）", parent);
+                }
+            }
+        }
+    }
+
     // ---- 4) 写 native m_Mesh ----
     int32_t meshId = uo::instance_id(meshObj);
     if (meshId == 0) { GLOG("[SELF] mesh instanceID is 0"); return false; }
     *(int32_t*)(base + L.offMesh) = meshId;
     out.meshId = meshId;
+
+    // ---- 4b) 渲染诊断：isVisible / bounds ----
+    {
+        Il2CppClass* rendCls = (Il2CppClass*)uo::u_class("UnityEngine", "Renderer");
+        Il2CppClass* goCls3   = (Il2CppClass*)uo::u_class("UnityEngine", "GameObject");
+        if (rendCls && goCls3) {
+            const MethodInfo* mVis = (const MethodInfo*)uo::u_method(rendCls, "get_isVisible", 0);
+            const MethodInfo* mBounds = (const MethodInfo*)uo::u_method(rendCls, "get_bounds", 0);
+            const MethodInfo* mEnabled = (const MethodInfo*)uo::u_method(rendCls, "get_enabled", 0);
+            if (mVis) {
+                void* r = uo::u_call(comp, (void*)mVis, nullptr);
+                bool vis = r ? (*(uint8_t*)((char*)r + 16) != 0) : false;
+                GLOG("[SELF] isVisible=%d (method=%p)", (int)vis, (void*)mVis);
+            } else {
+                GLOG("[SELF] get_isVisible 方法缺失");
+            }
+            if (mEnabled) {
+                void* r = uo::u_call(comp, (void*)mEnabled, nullptr);
+                bool en = r ? (*(uint8_t*)((char*)r + 16) != 0) : false;
+                GLOG("[SELF] renderer.enabled=%d", (int)en);
+            }
+            if (mBounds) {
+                void* r = uo::u_call(comp, (void*)mBounds, nullptr);
+                if (r) {
+                    float* b = (float*)((char*)r + 16);
+                    GLOG("[SELF] bounds center=(%.3f, %.3f, %.3f) extents=(%.3f, %.3f, %.3f)",
+                         b[0], b[1], b[2], b[3], b[4], b[5]);
+                }
+            }
+        }
+    }
 
     // ---- 5) 材质 ----
     if (materials && matCount > 0) {
