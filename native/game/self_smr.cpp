@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 
 #include "logsink.h"
 #include "bone_hook.h"
@@ -46,6 +47,120 @@ void* obj_native(void* o) {
 }
 
 }  // namespace
+
+// =====================================================================
+// 可见性诊断：managed 状态 + native 字段对比
+// =====================================================================
+static void dump_renderer_state(const char* tag, void* renderer) {
+    if (!renderer) { GLOG("[VIS] %s renderer null", tag); return; }
+    void* rCls = uo::u_class("UnityEngine", "Renderer");
+    if (!rCls) { GLOG("[VIS] Renderer class missing"); return; }
+    void* mEnabled = uo::u_method(rCls, "get_enabled", 0);
+    void* mVisible = uo::u_method(rCls, "get_isVisible", 0);
+    void* mBounds  = uo::u_method(rCls, "get_bounds", 0);
+
+    int en = -1, vis = -1;
+    if (mEnabled) {
+        void* r = uo::u_call(renderer, mEnabled, nullptr);
+        if (r) en = *(uint8_t*)((char*)r + 16) ? 1 : 0;
+    }
+    if (mVisible) {
+        void* r = uo::u_call(renderer, mVisible, nullptr);
+        if (r) vis = *(uint8_t*)((char*)r + 16) ? 1 : 0;
+    }
+    GLOG("[VIS] %s enabled=%d isVisible=%d", tag, en, vis);
+
+    if (mBounds) {
+        void* r = uo::u_call(renderer, mBounds, nullptr);
+        if (r) {
+            float* b = (float*)((char*)r + 16);   // Bounds: center(3f) + extents(3f)
+            GLOG("[VIS] %s bounds c=(%.3f, %.3f, %.3f) e=(%.3f, %.3f, %.3f)",
+                 tag, b[0], b[1], b[2], b[3], b[4], b[5]);
+        }
+    }
+}
+
+// 诊断：把模型根的世界坐标设到相机正前方 3 米。
+// cube 可见/模型可见的二分都靠这个——模型出现在眼前就说明渲染链路通，
+// 问题只在挂载位置/缩放；还是空白就是 SMR 数据（m_Skin 之类）。
+static void place_model_in_front(void* modelRoot) {
+    if (!modelRoot) return;
+    void* camCls  = uo::u_class("UnityEngine", "Camera");
+    void* trCls   = uo::u_class("UnityEngine", "Transform");
+    void* compCls = uo::u_class("UnityEngine", "Component");
+    if (!camCls || !trCls) return;
+
+    void* mMain  = uo::u_method(camCls, "get_main", 0);
+    void* mGetTr = compCls ? uo::u_method(compCls, "get_transform", 0) : nullptr;
+    void* mGetPos = uo::u_method(trCls, "get_position", 0);
+    void* mGetFwd = uo::u_method(trCls, "get_forward", 0);
+    void* mSetPos = uo::u_method_typed(trCls, "set_position", 1, "Vector3");
+    if (!mMain || !mGetTr || !mGetPos || !mGetFwd || !mSetPos) {
+        GLOG("[VIS] move-to-front: 方法缺失 main=%p getTr=%p getPos=%p getFwd=%p setPos=%p",
+             (void*)mMain, (void*)mGetTr, (void*)mGetPos, (void*)mGetFwd, (void*)mSetPos);
+        return;
+    }
+
+    void* cam = uo::u_call(nullptr, mMain, nullptr);
+    if (!cam) { GLOG("[VIS] move-to-front: main camera null"); return; }
+    void* camTr = uo::u_call(cam, mGetTr, nullptr);
+    void* rp = camTr ? uo::u_call(camTr, mGetPos, nullptr) : nullptr;
+    void* rf = camTr ? uo::u_call(camTr, mGetFwd, nullptr) : nullptr;
+    if (!rp || !rf) { GLOG("[VIS] move-to-front: pos/fwd null"); return; }
+
+    float* p = (float*)((char*)rp + 16);
+    float* f = (float*)((char*)rf + 16);
+    const float kDist = 3.0f;
+    struct { float x, y, z; } np = { p[0] + f[0]*kDist, p[1] + f[1]*kDist, p[2] + f[2]*kDist };
+    void* a[1] = { &np };
+    uo::u_call_void(modelRoot, mSetPos, a);
+    GLOG("[VIS] model -> camera front: (%.2f, %.2f, %.2f)  cam=(%.2f, %.2f, %.2f) fwd=(%.2f, %.2f, %.2f)",
+         np.x, np.y, np.z, p[0], p[1], p[2], f[0], f[1], f[2]);
+}
+
+static void dump_visibility(SelfSmr& s, void* sourceSmr, void* modelRoot) {
+    GLOG("[VIS] ===== 可见性诊断 =====");
+    place_model_in_front(modelRoot);
+    dump_renderer_state("self", s.smr);
+    dump_renderer_state("ref ", sourceSmr);
+
+    void* refNative = sourceSmr ? *(void**)((char*)sourceSmr + 16) : nullptr;
+    if (s.native && refNative) {
+        GLOG("[VIS] native self=%p ref=%p (只列 ref 有 self 为 0 的槽)",
+             s.native, refNative);
+        int printed = 0;
+        for (int off = 0; off < 0x300; off += 4) {
+            uint32_t sv = *(uint32_t*)((char*)s.native + off);
+            uint32_t rv = *(uint32_t*)((char*)refNative + off);
+            if (rv != 0 && sv == 0) {
+                GLOG("[VIS]   ref-only @+0x%x = 0x%08x", off, rv);
+                if (++printed >= 40) { GLOG("[VIS]   ...(截断)"); break; }
+            }
+        }
+        if (printed == 0) GLOG("[VIS]   ref-only 槽为 0");
+    }
+
+    void* camCls  = uo::u_class("UnityEngine", "Camera");
+    void* trCls   = uo::u_class("UnityEngine", "Transform");
+    void* compCls = uo::u_class("UnityEngine", "Component");
+    void* mCamMain = camCls ? uo::u_method(camCls, "get_main", 0) : nullptr;
+    void* mGetPos  = trCls ? uo::u_method(trCls, "get_position", 0) : nullptr;
+    void* mGetTr   = compCls ? uo::u_method(compCls, "get_transform", 0) : nullptr;
+
+    void* cam = mCamMain ? uo::u_call(nullptr, mCamMain, nullptr) : nullptr;
+    if (cam && mGetTr && mGetPos) {
+        void* camTr = uo::u_call(cam, mGetTr, nullptr);
+        void* r1 = camTr ? uo::u_call(camTr, mGetPos, nullptr) : nullptr;
+        void* r2 = modelRoot ? uo::u_call(modelRoot, mGetPos, nullptr) : nullptr;
+        if (r1 && r2) {
+            float* c = (float*)((char*)r1 + 16);
+            float* m = (float*)((char*)r2 + 16);
+            float dx = m[0]-c[0], dy = m[1]-c[1], dz = m[2]-c[2];
+            GLOG("[VIS] cam=(%.2f, %.2f, %.2f) model=(%.2f, %.2f, %.2f) dist=%.2f",
+                 c[0], c[1], c[2], m[0], m[1], m[2], sqrtf(dx*dx+dy*dy+dz*dz));
+        }
+    }
+}
 
 bool create_self_smr(void* modelTransform,
                      void* sourceSmr,
@@ -183,6 +298,7 @@ bool create_self_smr(void* modelTransform,
         }
     }
 
+    dump_visibility(out, sourceSmr, modelTransform);
     GLOG("[SELF] done: meshId=%d bones=%d mats=%d", meshId, boneCount, matCount);
     return true;
 }
