@@ -149,25 +149,43 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         return false;
     }
 
+    // =============================================================
+    // 调试二分开关（build-76 还是 SUCCESS 后崩，要分清是扩容还是 mesh）
+    //   kSkipExpand    = true  → 不扩 m_Bones，只换 mesh
+    //   kSkipSwapMesh  = true  → 只扩容，不换 mesh（当前默认，先测这个）
+    // 两个都 false 才是完整流程。
+    // =============================================================
+    const bool kSkipExpand   = false;
+    const bool kSkipSwapMesh = true;
+
     // ---- ⑥ 扩容 + 写 m_Bones ----
-    int written = expand_bones(smr, ids.data(), nb);
-    if (written < 0) {
-        set_err(out, "expand_bones failed");
-        return false;
+    if (!kSkipExpand) {
+        int written = expand_bones(smr, ids.data(), nb);
+        if (written < 0) {
+            set_err(out, "expand_bones failed");
+            return false;
+        }
+        out.boneSlots = written;
+    } else {
+        LLOG("[LOADER] DEBUG skip expand: m_Bones 保持原样");
     }
-    out.boneSlots = written;
 
     // ---- ⑦ 换 m_Mesh ----
-    int32_t meshId = uo::instance_id(bm.mesh);
-    if (meshId == 0) { set_err(out, "mesh instanceID is 0"); return false; }
-    if (!set_mesh_instance(smr, meshId)) {
-        set_err(out, "set_mesh_instance failed");
-        return false;
+    int32_t meshId = 0;
+    if (!kSkipSwapMesh) {
+        meshId = uo::instance_id(bm.mesh);
+        if (meshId == 0) { set_err(out, "mesh instanceID is 0"); return false; }
+        if (!set_mesh_instance(smr, meshId)) {
+            set_err(out, "set_mesh_instance failed");
+            return false;
+        }
+        out.meshId = meshId;
+    } else {
+        LLOG("[LOADER] DEBUG skip mesh swap: m_Mesh 保持游戏原值（只验证扩容）");
     }
-    out.meshId = meshId;
 
     // ---- ⑦b 材质 ----
-    if (!mats.items.empty()) {
+    if (!kSkipSwapMesh && !mats.items.empty()) {
         if (!set_shared_materials(smr, mats.items.data(), (int)mats.items.size())) {
             LLOG("[LOADER] 材质没设上去（共用子网格数 %d），画面会是默认材质", bm.subMeshes);
         }
@@ -179,7 +197,8 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     LLOG("[LOADER] read back: bones=%d (expect %d) meshId=%d (expect %d)",
          sz, nb, mid, meshId);
 
-    if (sz != nb || mid != meshId) {
+    bool readOk = kSkipSwapMesh ? true : (sz == nb && mid == meshId);
+    if (!readOk) {
         set_err(out, "read back mismatch");
         return false;
     }
