@@ -870,7 +870,7 @@ static volatile int  g_inTick = 0;            // 防重入
 // ---- UI 下发的配置（mmd_get_api 的 setter 写进来，tick 消费）----
 struct UiCmd {
     int   enableReplace = 0;
-    float modelScale    = 1.0f;
+    float modelScale    = 0.08f;   // 必须与 loader 的 kModelScale 一致，否则首帧就把它覆盖成 1.0（模型放大 12.5 倍）
     char  activeModel[160] = {0};
     int   cmdRescan  = 0;
     int   cmdReapply = 0;
@@ -1066,7 +1066,7 @@ static void refresh_status() {
     s.progress     = g_load.ok ? 100 : (g_stage == ST_LOAD ? 50 : 0);
     s.lastResult   = g_load.ok ? 1 : (g_load.error[0] ? 0 : -1);
     s.enableReplace= hasUi ? ui.enableReplace : 0;
-    s.modelScale   = hasUi ? ui.modelScale : 1.0f;
+    s.modelScale   = hasUi ? ui.modelScale : 0.08f;
     s.uptimeMs     = g_t0 ? (now_ms() - g_t0) : 0;
 
     pthread_mutex_lock(&g_statMtx);
@@ -1466,7 +1466,7 @@ static void api_get_status(MmdStatus* out) {
         memset(out, 0, sizeof(*out));
         out->apiVersion  = MMD_API_VERSION;
         out->lastResult  = -1;
-        out->modelScale  = 1.0f;
+        out->modelScale  = 0.08f;
         snprintf(out->logPath, sizeof(out->logPath), "%s/mmdruntime.log", g_dir.c_str());
     }
 }
@@ -1488,7 +1488,7 @@ static void api_set_model(const char* name) {
 }
 
 static void api_set_scale(float s) {
-    if (!(s > 0.0f)) s = 1.0f;
+    if (!(s > 0.0f)) s = 0.08f;
     pthread_mutex_lock(&g_cfgMtx);
     g_ui.modelScale = s;
     pthread_mutex_unlock(&g_cfgMtx);

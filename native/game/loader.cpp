@@ -81,12 +81,12 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         return false;
     }
 
-    // ---- ① hook 必须先装 ----
-    if (!bonehook::install()) {
-        set_err(out, "bone hook install failed (扩容后析构会崩，直接放弃)");
-        return false;
-    }
-    LLOG("[LOADER] bone hook addr=%p", bonehook::found_address());
+    // ---- ① 骨骼容器析构拦截（非必需）----
+    // 自建 SMR 的 m_Bones 用 capacity bit0=1 让 Unity 析构跳过 Deallocate，
+    // 不依赖 hook。Dobby 在 build-88 已实证走不通，装不上也要继续加载。
+    const bool hooked = bonehook::install();
+    LLOG("[LOADER] bone hook installed=%d addr=%p (non-fatal)",
+         (int)hooked, bonehook::found_address());
 
     // ---- ② Unity 对象层 ----
     if (!uo::ready() && !uo::init()) {
@@ -98,6 +98,8 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     // PMX 模型高约 20 单位，游戏角色约 1.5~2，不缩放就是个巨人。
     // 骨骼树也挂在这个节点下，才能跟着一起缩放；否则骨骼在场景根按 PMX 绝对坐标
     // 摆着、模型缩了骨骼没缩，蒙皮直接错位。
+    // 必须与 module.cpp 的 UiCmd::modelScale 默认值一致（0.08），
+    // 否则 tick 首帧的 apply 会把这里的缩放覆盖掉。
     const float kModelScale = 0.08f;
     void* modelRoot = uo::create_node("MMDModel", roleRoot, 0.0f, 0.0f, 0.0f);
     if (!modelRoot) { set_err(out, "create model root failed"); return false; }
@@ -173,8 +175,18 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     const bool kUseSelfSmr = true;
     if (kUseSelfSmr) {
         game::SelfSmr self;
-        void** matsPtr = mats.items.empty() ? nullptr : mats.items.data();
-        int    matsN   = (int)mats.items.size();
+        // 材质数组里可能有 nullptr（该材质构造失败）。null 材质塞给 SMR 会让
+        // 对应子网格渲染不出来、甚至在渲染线程解引用空指针，先过滤；
+        // 数量不足 submesh 数时用第一个有效材质补齐。
+        std::vector<void*> matsOk;
+        for (void* mp : mats.items) if (mp) matsOk.push_back(mp);
+        if (!matsOk.empty() && matsOk.size() < (size_t)bm.subMeshes) {
+            matsOk.resize((size_t)bm.subMeshes, matsOk[0]);
+        }
+        void** matsPtr = matsOk.empty() ? nullptr : matsOk.data();
+        int    matsN   = (int)matsOk.size();
+        LLOG("[LOADER] materials to SMR: %d (raw %zu, null filtered)",
+             matsN, mats.items.size());
         if (!game::create_self_smr(modelRoot, smr.managed, bm.mesh,
                                    ids.data(), (int)nb,
                                    matsPtr, matsN, self)) {

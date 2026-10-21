@@ -95,7 +95,8 @@ bool create_self_smr(void* modelTransform,
             void* a[1] = { &layer };
             uo::u_call_void(go, (void*)mSetLayer, a);
         }
-        GLOG("[SELF] layer copied: %d (setLayer=%p)", layer, (void*)mSetLayer);
+        GLOG("[SELF] layer copied: %d (setLayer=%p)%s", layer, (void*)mSetLayer,
+             layer == 0 ? "  WARNING: layer=0，可能被相机 cullingMask 剔除" : "");
     }
 
     // ---- 2) AddComponent(SkinnedMeshRenderer 的 Type) ----
@@ -128,12 +129,19 @@ bool create_self_smr(void* modelTransform,
     int64_t oldCap  = *(int64_t*)(base + L.offBoneCap);
     GLOG("[SELF] old bones data=%p size=%d cap=%lld", oldData, oldSize, (long long)oldCap);
 
-    // 登记给析构 hook（自建 SMR 销毁时把字段还原，避免 Unity free 我们的内存）
-    bonehook::set_ours(newIds, oldData, oldSize, oldCap);
+    // 登记给析构 hook（只在 hook 真装上时才有意义；Dobby 走不通时是空操作）
+    if (bonehook::installed()) {
+        bonehook::set_ours(newIds, oldData, oldSize, oldCap);
+    }
+
+    // capacity 最低位设 1：Unity 的容器析构读 [容器+0x18] 的 byte0，
+    // bit0==1 直接 return，不调 Deallocate —— 这样它不会 free 我们 malloc 的
+    // 这块内存（否则 heap corruption 必崩）。
+    const int64_t capOdd = (int64_t)((int64_t)boneCount | 1);
 
     *(void**)(base + L.offBoneData) = newIds;
     *(int32_t*)(base + L.offBoneSize) = boneCount;
-    *(int64_t*)(base + L.offBoneCap) = (int64_t)boneCount;
+    *(int64_t*)(base + L.offBoneCap) = capOdd;
     out.bones = boneCount;
 
     // ---- 4) 写 native m_Mesh ----

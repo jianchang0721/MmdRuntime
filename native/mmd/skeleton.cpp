@@ -131,6 +131,13 @@ bool Skeleton::build(const Model& model, void* rootParent) {
 }
 
 void Skeleton::destroy() {
+    // 释放钉住骨骼 Transform 的 gchandle，否则 reload 会累积 224 个 pinned 引用
+    for (auto& n : nodes_) {
+        if (n.gcHandle && g_api.gchandle_free) {
+            g_api.gchandle_free(n.gcHandle);
+            n.gcHandle = 0;
+        }
+    }
     // 只清引用，GameObject 交给 Unity 场景管理（我们没法安全 Destroy）
     nodes_.clear();
     built_ = roots_ = maxDepth_ = 0;

@@ -154,15 +154,13 @@ bool install() {
     }
     g_hookAddr = addr;
 
-    int rc = DobbyHook(addr, (void*)hook_body, (void**)&g_orig);
-    if (rc != 0 || !g_orig) {
-        HLOG("[BONEHOOK] DobbyHook failed rc=%d orig=%p", rc, (void*)g_orig);
-        return false;
-    }
-
-    g_installed = true;
-    HLOG("[BONEHOOK] hooked bones dtor @%p orig=%p", addr, (void*)g_orig);
-    return true;
+    // build-88 tombstone 实证：DobbyHook -> InterceptRouting::GenerateRelocatedCode
+    // -> GenRelocateCodeAndBranch -> abort（目标地址已被别人 hook，Dobby 改写
+    // 别人的 trampoline 直接崩）。所以这里只保留特征码扫描结果当诊断，不装 hook。
+    // 自建 SMR 的 m_Bones 内存改为 capacity bit0=1，让 Unity 析构跳过 Deallocate
+    // （见 self_smr.cpp 的 capOdd）。
+    HLOG("[BONEHOOK] dtor addr=%p, DobbyHook DISABLED (build-88 abort)", addr);
+    return false;
 }
 
 void set_ours(void* ourData, void* origData, int32_t origSize, int64_t origCap) {
