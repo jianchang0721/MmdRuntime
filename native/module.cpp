@@ -48,6 +48,7 @@
 #include <dirent.h>
 #include <strings.h>
 #include "unity/il2cpp_api.h"
+#include "unity/unity_objects.h"
 
 #define TAG "MmdRuntime"
 
@@ -585,6 +586,48 @@ static void dump_smrs() {
                 game::install_name_hook(64);
             }
         }
+    }
+
+    // ---- C 方案前置：自建渲染对象的 API 探测（只读，不改任何流程）----
+    {
+        Il2CppClass* go  = find_class_any("UnityEngine", "GameObject");
+        Il2CppClass* mf  = find_class_any("UnityEngine", "MeshFilter");
+        Il2CppClass* mr  = find_class_any("UnityEngine", "MeshRenderer");
+        L("[RENDERAPI] GameObject=%p MeshFilter=%p MeshRenderer=%p SMR=%p",
+          (void*)go, (void*)mf, (void*)mr, (void*)g_smrClass);
+
+        if (go) {
+            void* iter = nullptr;
+            const MethodInfo* m;
+            int n = 0;
+            while ((m = g_api.class_get_methods(go, &iter))) {
+                const char* nm = g_api.method_get_name(m);
+                if (!nm || strcmp(nm, "AddComponent") != 0) continue;
+                n++;
+                uint32_t pc = g_api.method_get_param_count(m);
+                const char* p0 = "?";
+                if (pc >= 1) {
+                    const Il2CppType* t = g_api.method_get_param(m, 0);
+                    Il2CppClass* k = t ? g_api.class_from_type(t) : nullptr;
+                    if (k) p0 = g_api.class_get_name(k);
+                }
+                L("[RENDERAPI]   AddComponent #%d params=%u p0=%s", n, pc, p0 ? p0 : "?");
+            }
+            if (n == 0) L("[RENDERAPI]   AddComponent: 一个重载都没有（被 strip）");
+        }
+        if (mf) {
+            L("[RENDERAPI] MeshFilter set_mesh=%p get_mesh=%p",
+              uo::u_method(mf, "set_mesh", 1), uo::u_method(mf, "get_mesh", 0));
+        }
+        if (mr) {
+            L("[RENDERAPI] MeshRenderer set_material=%p set_materials=%p",
+              uo::u_method(mr, "set_material", 1), uo::u_method(mr, "set_sharedMaterials", 1));
+            L("[RENDERAPI] MeshRenderer set_enabled=%p",
+              uo::u_method(mr, "set_enabled", 1));
+        }
+        L("[RENDERAPI] SMR ctor(0)=%p ctor(1)=%p",
+          uo::u_method_own(g_smrClass, ".ctor", 0),
+          uo::u_method_own(g_smrClass, ".ctor", 1));
     }
 
     L("========== [UNITY] SMR DUMP END ==========");
