@@ -38,6 +38,12 @@
 #define STAG "MmdStealth"
 #define SLOG(...) logsink::Write(__VA_ARGS__)
 
+// 调试开关：0 = 完全不装任何 libc hook（对照组实验用）
+// 用来判断贴图/文件读取的崩溃是不是 stealth 的 fopen hook 造成的
+#ifndef MMD_STEALTH_ENABLE
+#define MMD_STEALTH_ENABLE 1
+#endif
+
 #ifndef MFD_CLOEXEC
 #define MFD_CLOEXEC 0x0001U
 #endif
@@ -375,6 +381,10 @@ void AddHiddenMark(const char* mark) {
 }
 
 void Install() {
+#if MMD_STEALTH_ENABLE == 0
+    SLOG("[STEALTH] disabled (MMD_STEALTH_ENABLE=0) —— 对照组：不装任何 libc hook");
+    return;
+#endif
     if (g_installed) return;
     g_installed = true;
 

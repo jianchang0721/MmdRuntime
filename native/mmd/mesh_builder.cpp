@@ -344,7 +344,10 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                     d[k] = model.faceVertex[(size_t)(r.start + k)];
                 }
                 int32_t idx = (int32_t)si;
-                void* a2[2] = { &arr, &idx };
+                // arr 是 int[]（引用类型）→ 传对象指针；idx 是 int32 → 传地址
+                // （之前写成 { &arr, &idx }，arr 被当栈地址，SetTriangles 静默失败，
+                //  这就是 25 个子网格 fallback 成 1 的根因）
+                void* a2[2] = { arr, &idx };
                 uo::u_call_void(mesh, mc.mSetTrianglesSub, a2);
                 okCount++;
             }
@@ -362,7 +365,13 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
             void* a[1] = { arr };
             uo::u_call_void(mesh, mc.mSetTriangles, a);
             out.subMeshes = 1;
-            MLOG("[MESH] fallback to single submesh (materials=%zu)", model.materials.size());
+            const char* why = !mc.mSetSubMeshCount      ? "set_subMeshCount missing"
+                            : !mc.mSetTrianglesSub      ? "SetTriangles(int[],int) missing"
+                            : "per-submesh call failed";
+            MLOG("[MESH] SUBS FALLBACK: %s (ok=%d/%zu)", why,
+                 multiOk ? (int)subs.size() : 0, subs.size());
+            MLOG("[MESH] WARNING: only 1 of %zu materials will render (subMeshes=1)",
+                 model.materials.size());
         }
     }
 

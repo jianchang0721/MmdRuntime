@@ -327,9 +327,11 @@ static std::string to_utf8(Il2CppString* s) {
     if (!s) return "";
     char* p = (char*)s;
     int32_t len = *(int32_t*)(p + 16);
+    // 上限保护：字符串对象损坏时 len 可能是天文数字，reserve(len) 直接 OOM/bad_alloc
+    if (len < 0 || len > 4096) return "";
     const uint16_t* ch = (const uint16_t*)(p + 20);
     std::string out;
-    out.reserve(len);
+    out.reserve((size_t)len);
     for (int32_t i = 0; i < len; i++) {
         uint16_t c = ch[i];
         if (c < 0x80) out.push_back((char)c);
