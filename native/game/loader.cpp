@@ -107,10 +107,17 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
 
     // ---- ④ Mesh ----
     mmd::BuiltMesh bm;
-    if (!mmd::build_mesh(model, out.skeleton, bm)) {
+    // A 方案：true = 用 3 顶点最小网格（定位换 mesh 后崩的原因）
+    //          false = 完整 PMX mesh
+    const bool kUseSimpleMesh = true;
+    bool meshOk = kUseSimpleMesh
+                ? mmd::build_simple_mesh(out.skeleton, bm)
+                : mmd::build_mesh(model, out.skeleton, bm);
+    if (!meshOk) {
         set_err(out, "mesh build failed");
         return false;
     }
+    LLOG("[LOADER] mesh mode=%s", kUseSimpleMesh ? "SIMPLE(3 verts)" : "FULL");
     out.mesh = bm.mesh;
     out.verts = bm.vertexCount;
     out.tris = bm.indexCount / 3;

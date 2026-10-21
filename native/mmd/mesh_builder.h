@@ -25,4 +25,9 @@ struct BuiltMesh {
 // skel 必须已经 build 好（需要每根骨骼的绝对坐标来算 bindpose）
 bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out);
 
+// 最小测试网格：3 顶点 1 三角形，权重全绑骨骼 0。
+// bindposes 数量仍然 = skel.count()（与 m_Bones 严格对齐），
+// 用来定位「换 mesh 后渲染崩」到底是不是数据尺寸问题。
+bool build_simple_mesh(const Skeleton& skel, BuiltMesh& out);
+
 }  // namespace mmd

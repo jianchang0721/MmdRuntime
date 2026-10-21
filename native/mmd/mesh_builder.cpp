@@ -505,4 +505,106 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
     return true;
 }
 
+// =====================================================================
+// 最小测试网格（A 方案）
+//
+// 3 顶点 / 1 三角形 / 权重全绑骨骼 0 / bindposes = 骨骼总数（与 m_Bones 严格对齐）。
+// 目的：把「换 mesh 后渲染崩」缩到最小变量。
+//   不崩 → 数据规模/子网格结构问题
+//   崩   → Unity 内部 m_Skin 缓存不随 mesh 更新，换 mesh 这条路本身不通
+// =====================================================================
+bool build_simple_mesh(const Skeleton& skel, BuiltMesh& out) {
+    out = BuiltMesh{};
+    MeshClasses mc;
+    if (!init_mesh_classes(mc)) {
+        MLOG("[MESH] simple: init classes failed");
+        return false;
+    }
+
+    void* mesh = uo::u_new_object(mc.meshCls);
+    if (!mesh) { MLOG("[MESH] simple: object_new failed"); return false; }
+    uo::u_call_void(mesh, mc.mCtor, nullptr);
+    MLOG("[MESH] simple: mesh=%p", mesh);
+
+    const int nv = 3;
+    const float verts[9] = { -1.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f };
+    void* varr = uo::u_new_array(mc.elemVec3, (size_t)nv);
+    if (!varr) { MLOG("[MESH] simple: verts alloc failed"); return false; }
+    memcpy(uo::u_array_data(varr), verts, sizeof(verts));
+    void* av[1] = { varr };
+    uo::u_call_void(mesh, mc.mSetVertices, av);
+    MLOG("[MESH] simple: vertices=3");
+
+    const float norms[9] = { 0, 0, 1,  0, 0, 1,  0, 0, 1 };
+    void* narr = uo::u_new_array(mc.elemVec3, (size_t)nv);
+    if (narr) {
+        memcpy(uo::u_array_data(narr), norms, sizeof(norms));
+        void* an[1] = { narr };
+        uo::u_call_void(mesh, mc.mSetNormals, an);
+    }
+
+    const float uvs[6] = { 0, 0,  1, 0,  0.5f, 1 };
+    void* uarr = uo::u_new_array(mc.elemVec2, (size_t)nv);
+    if (uarr) {
+        memcpy(uo::u_array_data(uarr), uvs, sizeof(uvs));
+        void* au[1] = { uarr };
+        uo::u_call_void(mesh, mc.mSetUV, au);
+    }
+
+    int32_t tris[3] = { 0, 1, 2 };
+    void* tarr = uo::u_new_array(mc.elemInt, 3);
+    if (tarr) {
+        memcpy(uo::u_array_data(tarr), tris, sizeof(tris));
+        void* at[1] = { tarr };
+        uo::u_call_void(mesh, mc.mSetTriangles, at);
+    }
+    MLOG("[MESH] simple: triangles=1");
+
+    // BoneWeight 布局：int32 boneIndex0..3 在前 16 字节，float weight0..3 在后 16 字节
+    char bw[32];
+    memset(bw, 0, sizeof(bw));
+    *(float*)(bw + 16) = 1.0f;   // weight0 = 1.0, boneIndex0 = 0
+    void* barr = uo::u_new_array(mc.elemBoneWeight, (size_t)nv);
+    if (barr) {
+        char* bd = (char*)uo::u_array_data(barr);
+        for (int i = 0; i < nv; i++) memcpy(bd + (size_t)i * 32, bw, 32);
+        void* ab[1] = { barr };
+        uo::u_call_void(mesh, mc.mSetBoneWeights, ab);
+    }
+    MLOG("[MESH] simple: boneWeights=%d", nv);
+
+    const int nb = skel.count();
+    void* parr = uo::u_new_array(mc.elemMatrix4x4, (size_t)nb);
+    if (parr) {
+        float* pd = (float*)uo::u_array_data(parr);
+        for (int i = 0; i < nb; i++) {
+            float* m = pd + (size_t)i * 16;
+            memset(m, 0, 16 * sizeof(float));
+            m[0] = m[5] = m[10] = m[15] = 1.0f;
+            const BoneNode& n = skel.at(i);
+            m[12] = -n.worldPos[0];
+            m[13] = -n.worldPos[1];
+            m[14] = -n.worldPos[2];
+        }
+        void* ap[1] = { parr };
+        uo::u_call_void(mesh, mc.mSetBindposes, ap);
+    }
+    MLOG("[MESH] simple: bindposes=%d", nb);
+
+    if (mc.mUpload) {
+        uint8_t keep = 0;
+        void* au[1] = { &keep };
+        uo::u_call_void(mesh, mc.mUpload, au);
+    }
+    MLOG("[MESH] simple: upload done");
+
+    out.mesh = mesh;
+    out.vertexCount = nv;
+    out.indexCount = 3;
+    out.boneCount = nb;
+    out.subMeshes = 1;
+    out.ok = true;
+    return true;
+}
+
 }  // namespace mmd
