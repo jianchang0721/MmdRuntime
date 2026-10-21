@@ -1011,13 +1011,23 @@ static bool do_load_model() {
     smr.boneSlots = g_smrs[(size_t)idx].boneCount;
     smr.meshObj   = g_smrs[(size_t)idx].meshObj;
 
-    // 目标角色的 Transform：模型根节点要挂在它下面，才能跟着角色走
+    // 目标角色的 Transform：模型根节点挂在它下面，才能跟着角色走。
+    // 注意挂的是「父级」不是骨骼本身 —— ~/ModelMod_repo 的 spawn_cube_for
+    // 就是这么干的：骨骼自己带旋转/缩放，挂上去位置很难算。
     void* roleRoot = nullptr;
     {
+        void* tr = nullptr;
         const MethodInfo* mGetTr = find_method_any(g_smrClass, "get_transform");
-        if (mGetTr) roleRoot = invoke(mGetTr, g_smrs[(size_t)idx].obj, nullptr);
-        L("[LOAD] roleRoot=%p (SMR #%d '%s')", roleRoot, idx,
-          g_smrs[(size_t)idx].name.c_str());
+        if (mGetTr) tr = invoke(mGetTr, g_smrs[(size_t)idx].obj, nullptr);
+
+        void* parent = nullptr;
+        Il2CppClass* trCls = find_class_any("UnityEngine", "Transform");
+        const MethodInfo* mParent = trCls ? find_method_any(trCls, "get_parent") : nullptr;
+        if (tr && mParent) parent = invoke(mParent, tr, nullptr);
+
+        roleRoot = parent ? parent : tr;
+        L("[LOAD] roleRoot=%p (SMR #%d '%s') tr=%p parent=%p",
+          roleRoot, idx, g_smrs[(size_t)idx].name.c_str(), tr, parent);
     }
 
     g_load = game::LoadResult{};

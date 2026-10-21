@@ -99,7 +99,9 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     // 骨骼树也挂在这个节点下，才能跟着一起缩放；否则骨骼在场景根按 PMX 绝对坐标
     // 摆着、模型缩了骨骼没缩，蒙皮直接错位。
     const float kModelScale = 0.08f;
-    void* modelRoot = uo::create_node("MMDModel", roleRoot, 0.0f, 0.0f, 0.0f);
+    // 位置：先抬到头顶（0,2,0），跟 ModelMod 的 spawn_cube_for 一样，
+    // 不然埋在角色模型里根本看不出来。确认渲染通了再往下调。
+    void* modelRoot = uo::create_node("MMDModel", roleRoot, 0.0f, 2.0f, 0.0f);
     if (!modelRoot) { set_err(out, "create model root failed"); return false; }
     uo::set_local_scale(modelRoot, kModelScale, kModelScale, kModelScale);
     LLOG("[LOADER] model root=%p parent=%p scale=%.3f", modelRoot, roleRoot, kModelScale);
