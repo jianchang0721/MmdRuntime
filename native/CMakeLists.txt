@@ -31,6 +31,7 @@ add_library(mmdruntime SHARED
     game/loader.cpp
     game/camera_ctrl.cpp
     game/render_probe.cpp
+    game/bone_driver.cpp
 )
 
 target_include_directories(mmdruntime PRIVATE

@@ -12,6 +12,7 @@
 #include "bone_hook.h"
 #include "self_smr.h"
 #include "render_probe.h"
+#include "bone_driver.h"
 #include "mmd/material.h"
 #include "mmd/texture.h"
 #include "unity/il2cpp_api.h"
@@ -197,6 +198,22 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         // 诊断：打印自建 SMR 状态
         game::probe_self_smr_state(self, bm.mesh);
         game::probe_init();
+        
+        // 骨骼驱动：初始化 + 绑定游戏骨骼
+        game::bone_driver_init(model, out.skeleton);
+        
+        // 找游戏角色的 SMR，拿骨骼 Transform 数组
+        // 从 sourceSmr 读 m_Bones
+        if (smr.native) {
+            uint8_t* base = (uint8_t*)smr.native;
+            int32_t boneSize = *(int32_t*)(base + 0x1f0);
+            void* boneData = *(void**)(base + 0x1e0);
+            if (boneData && boneSize > 0) {
+                void** gameBones = (void**)boneData;
+                game::bone_driver_bind_game_bones(gameBones, boneSize);
+                LLOG("[LOADER] bone driver bound %d game bones", boneSize);
+            }
+        }
         
         return true;
     }

@@ -13,6 +13,7 @@
 #include "../logsink.h"
 #include "../unity/il2cpp_api.h"
 #include "../unity/unity_objects.h"
+#include "bone_driver.h"
 
 #define PTAG "MmdProbe"
 #define PLOG(...) logsink::Write(__VA_ARGS__)
@@ -152,6 +153,9 @@ void probe_frame() {
     if (frame % 60 == 0) {
         PLOG("[PROBE] frame %d, render calls %d", frame, g_renderCount);
     }
+    
+    // 骨骼驱动：每帧更新
+    bone_driver_update();
 }
 
 }  // namespace game

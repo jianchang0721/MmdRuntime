@@ -46,6 +46,7 @@
 #include "stealth.h"
 #include "public/mmd_api.h"
 #include "game/loader.h"
+#include "game/render_probe.h"
 #include <dirent.h>
 #include <strings.h>
 #include "unity/il2cpp_api.h"
@@ -1318,6 +1319,9 @@ static void tick_body() {
     // 摄像机：放在状态机之后，保证是渲染前最后一写
     if (game::g_camera.enabled) game::g_camera.update();
 
+    
+    // 骨骼驱动：每帧更新 MMD 骨骼
+    game::probe_frame();
     refresh_status();   // 状态快照每帧刷一次，UI 侧随时能读
     g_inTick = 0;
 }
