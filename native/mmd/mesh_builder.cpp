@@ -40,6 +40,7 @@ struct MeshClasses {
     void* mSetBoneWeights = nullptr;
     void* mSetBindposes = nullptr;
     void* mUpload = nullptr;
+    void* mGetVertexCount = nullptr;   // 验证 mesh 对象是否真的活着
 
     void* elemVec3 = nullptr;
     void* elemVec2 = nullptr;
@@ -99,6 +100,7 @@ bool init_mesh_classes(MeshClasses& mc) {
     mc.mSetBoneWeights  = uo::u_method(mc.meshCls, "set_boneWeights", 1);
     mc.mSetBindposes    = uo::u_method(mc.meshCls, "set_bindposes", 1);
     mc.mUpload          = uo::u_method(mc.meshCls, "UploadMeshData", 1);
+    mc.mGetVertexCount  = uo::u_method(mc.meshCls, "get_vertexCount", 0);
 
     mc.elemVec3        = uo::u_class("UnityEngine", "Vector3");
     mc.elemVec2        = uo::u_class("UnityEngine", "Vector2");
@@ -221,6 +223,14 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                          uo::u_array_data(probe),
                          (ec && g_api.class_array_element_size)
                              ? (int)g_api.class_array_element_size(ec) : -1);
+                }
+                // 先反问一句：mesh 对象到底活没活。
+                // get_vertexCount 是纯读，崩了就是 mesh 本身无效（object_new+ctor 看着成功
+                // 但 native Mesh 没建起来）；能返回 0 就说明 mesh 是好的，问题在传参。
+                if (mc.mGetVertexCount) {
+                    void* r = uo::u_call(mesh, mc.mGetVertexCount, nullptr);
+                    int32_t vc = r ? *(int32_t*)((char*)r + 16) : -12345;
+                    MLOG("[MESH] probe: get_vertexCount()=%d", vc);
                 }
                 MLOG("[MESH] probe: set_vertices x64...");
                 void* pa[1] = { &probe };
