@@ -1011,8 +1011,17 @@ static bool do_load_model() {
     smr.boneSlots = g_smrs[(size_t)idx].boneCount;
     smr.meshObj   = g_smrs[(size_t)idx].meshObj;
 
+    // 目标角色的 Transform：模型根节点要挂在它下面，才能跟着角色走
+    void* roleRoot = nullptr;
+    {
+        const MethodInfo* mGetTr = find_method_any(g_smrClass, "get_transform");
+        if (mGetTr) roleRoot = invoke(mGetTr, g_smrs[(size_t)idx].obj, nullptr);
+        L("[LOAD] roleRoot=%p (SMR #%d '%s')", roleRoot, idx,
+          g_smrs[(size_t)idx].name.c_str());
+    }
+
     g_load = game::LoadResult{};
-    if (!game::load_model_into_smr(g_model, pmx.c_str(), smr, nullptr, g_load)) {
+    if (!game::load_model_into_smr(g_model, pmx.c_str(), smr, roleRoot, g_load)) {
         LERR("[LOAD] 失败: %s", g_load.error);
         return false;
     }

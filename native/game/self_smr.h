@@ -24,10 +24,10 @@ struct SelfSmr {
     int     bones  = 0;
 };
 
-// parentTransform：挂到哪个 Transform 下（传 nullptr = 场景根）
+// modelTransform：已经建好的模型根节点（挂在游戏角色下、带缩放的拿一个）。
+//                 SMR 组件加到它所在的 GameObject 上，不再自己建节点。
 // boneIds：每个骨骼 Transform 的 instanceID 数组
-bool create_self_smr(const char* name,
-                     void* parentTransform,
+bool create_self_smr(void* modelTransform,
                      void* meshObj,
                      const int32_t* boneIds, int boneCount,
                      void** materials, int matCount,

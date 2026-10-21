@@ -94,8 +94,18 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         return false;
     }
 
-    // ---- ③ 骨骼树 ----
-    if (!out.skeleton.build(model, roleRoot)) {
+    // ---- ②b 模型根节点：挂在游戏角色下，带缩放 ----
+    // PMX 模型高约 20 单位，游戏角色约 1.5~2，不缩放就是个巨人。
+    // 骨骼树也挂在这个节点下，才能跟着一起缩放；否则骨骼在场景根按 PMX 绝对坐标
+    // 摆着、模型缩了骨骼没缩，蒙皮直接错位。
+    const float kModelScale = 0.08f;
+    void* modelRoot = uo::create_node("MMDModel", roleRoot, 0.0f, 0.0f, 0.0f);
+    if (!modelRoot) { set_err(out, "create model root failed"); return false; }
+    uo::set_local_scale(modelRoot, kModelScale, kModelScale, kModelScale);
+    LLOG("[LOADER] model root=%p parent=%p scale=%.3f", modelRoot, roleRoot, kModelScale);
+
+    // ---- ③ 骨骼树（挂到模型根下）----
+    if (!out.skeleton.build(model, modelRoot)) {
         set_err(out, "skeleton build failed");
         return false;
     }
@@ -165,7 +175,7 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         game::SelfSmr self;
         void** matsPtr = mats.items.empty() ? nullptr : mats.items.data();
         int    matsN   = (int)mats.items.size();
-        if (!game::create_self_smr("MMDModel", roleRoot, bm.mesh,
+        if (!game::create_self_smr(modelRoot, bm.mesh,
                                    ids.data(), (int)nb,
                                    matsPtr, matsN, self)) {
             set_err(out, "create_self_smr failed");

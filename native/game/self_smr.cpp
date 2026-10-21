@@ -47,24 +47,23 @@ void* obj_native(void* o) {
 
 }  // namespace
 
-bool create_self_smr(const char* name,
-                     void* parentTransform,
+bool create_self_smr(void* modelTransform,
                      void* meshObj,
                      const int32_t* boneIds, int boneCount,
                      void** materials, int matCount,
                      SelfSmr& out) {
     out = SelfSmr{};
-    if (!meshObj || !boneIds || boneCount <= 0) {
-        GLOG("[SELF] bad args mesh=%p ids=%p n=%d", meshObj, (void*)boneIds, boneCount);
+    if (!modelTransform || !meshObj || !boneIds || boneCount <= 0) {
+        GLOG("[SELF] bad args tr=%p mesh=%p ids=%p n=%d",
+             modelTransform, meshObj, (void*)boneIds, boneCount);
         return false;
     }
 
     Il2CppClass* smrCls = (Il2CppClass*)uo::u_class("UnityEngine", "SkinnedMeshRenderer");
     if (!smrCls) { GLOG("[SELF] SMR class missing"); return false; }
 
-    // ---- 1) GameObject + Transform ----
-    void* tr = uo::create_node(name, parentTransform, 0.0f, 0.0f, 0.0f);
-    if (!tr) { GLOG("[SELF] create_node failed"); return false; }
+    // ---- 1) 用已有的模型根节点（已挂在角色下、已缩放）----
+    void* tr = modelTransform;
     out.tr = tr;
 
     Il2CppClass* trCls = (Il2CppClass*)uo::u_class("UnityEngine", "Transform");
