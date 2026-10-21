@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "bone_hook.h"
+#include "self_smr.h"
 #include "mmd/material.h"
 #include "mmd/texture.h"
 #include "unity/il2cpp_api.h"
@@ -154,6 +155,31 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     if (idOk < nb / 2) {
         set_err(out, "too many invalid bone instanceIDs");
         return false;
+    }
+
+    // =============================================================
+    // C 方案：自建 SMR（build-79 已证实给游戏 SMR 换 mesh 必崩）
+    // =============================================================
+    const bool kUseSelfSmr = true;
+    if (kUseSelfSmr) {
+        game::SelfSmr self;
+        void** matsPtr = mats.items.empty() ? nullptr : mats.items.data();
+        int    matsN   = (int)mats.items.size();
+        if (!game::create_self_smr("MMDModel", roleRoot, bm.mesh,
+                                   ids.data(), (int)nb,
+                                   matsPtr, matsN, self)) {
+            set_err(out, "create_self_smr failed");
+            return false;
+        }
+        out.mesh = bm.mesh;
+        out.verts = bm.vertexCount;
+        out.tris = bm.indexCount / 3;
+        out.boneSlots = self.bones;
+        out.meshId = self.meshId;
+        out.ok = true;
+        LLOG("[LOADER] SELF SMR OK: go=%p tr=%p meshId=%d bones=%d mats=%d",
+             self.go, self.tr, self.meshId, self.bones, matsN);
+        return true;
     }
 
     // =============================================================

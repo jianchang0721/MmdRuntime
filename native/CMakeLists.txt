@@ -27,6 +27,7 @@ add_library(mmdruntime SHARED
     game/smr_bind.cpp
     game/smr_layout.cpp
     game/bone_names.cpp
+    game/self_smr.cpp
     game/loader.cpp
     game/camera_ctrl.cpp
 )
