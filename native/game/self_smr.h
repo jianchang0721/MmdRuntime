@@ -39,6 +39,9 @@ bool create_self_smr(void* modelTransform,
                      void** materials, int matCount,
                      SelfSmr& out);
 
+// 每 60 帧读一次自建 SMR 的 isVisible / bounds（渲染系统跨帧更新的缓存）
+void probe_self_tick();
+
 // 销毁（调试用；不调用也不会立刻析构）
 void destroy_self_smr(SelfSmr& s);
 

@@ -21,6 +21,10 @@ extern Il2CppApi g_api;
 
 namespace game {
 
+// 全局保存自建 SMR，给 tick 探针用
+static void* g_selfSmrManaged = nullptr;
+static void* g_selfSmrNative  = nullptr;
+
 namespace {
 
 // 按「名字 + 参数个数 + 第一个参数类名」筛重载（AddComponent / set_sharedMaterials 都有多个）
@@ -384,9 +388,38 @@ bool create_self_smr(void* modelTransform,
         }
     }
 
+    g_selfSmrManaged = out.smr;
+    g_selfSmrNative  = out.native;
+
     dump_visibility(out, sourceSmr, modelTransform);
     GLOG("[SELF] done: meshId=%d bones=%d mats=%d", meshId, boneCount, matCount);
     return true;
+}
+
+void probe_self_tick() {
+    static int n = 0;
+    if (++n % 60 != 1) return;
+    if (!g_selfSmrManaged) return;
+
+    void* rCls = uo::u_class("UnityEngine", "Renderer");
+    if (!rCls) return;
+    void* mVis = uo::u_method(rCls, "get_isVisible", 0);
+    void* mB   = uo::u_method(rCls, "get_bounds", 0);
+
+    int vis = -1;
+    if (mVis) {
+        void* r = uo::u_call(g_selfSmrManaged, mVis, nullptr);
+        if (r) vis = *(uint8_t*)((char*)r + 16) ? 1 : 0;
+    }
+    float bx = 0, by = 0, bz = 0;
+    if (mB) {
+        void* r = uo::u_call(g_selfSmrManaged, mB, nullptr);
+        if (r) {
+            float* b = (float*)((char*)r + 16);
+            bx = b[3]; by = b[4]; bz = b[5];
+        }
+    }
+    GLOG("[VIS] tick#%d isVisible=%d ext=(%.3f, %.3f, %.3f)", n, vis, bx, by, bz);
 }
 
 void destroy_self_smr(SelfSmr& s) {

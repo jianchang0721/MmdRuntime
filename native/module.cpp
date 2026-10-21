@@ -45,6 +45,7 @@
 #include "stealth.h"
 #include "public/mmd_api.h"
 #include "game/loader.h"
+#include "game/self_smr.h"
 #include <dirent.h>
 #include <strings.h>
 #include "unity/il2cpp_api.h"
@@ -1294,6 +1295,9 @@ static void tick_body() {
 
     // 摄像机：放在状态机之后，保证是渲染前最后一写
     if (game::g_camera.enabled) game::g_camera.update();
+
+    // 跨帧观测自建 SMR 的 isVisible / bounds（每 60 帧一次）
+    game::probe_self_tick();
 
     refresh_status();   // 状态快照每帧刷一次，UI 侧随时能读
     g_inTick = 0;
