@@ -135,6 +135,14 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     out.verts = bm.vertexCount;
     out.tris = bm.indexCount / 3;
     out.subMeshes = bm.subMeshes;
+
+    // 钉住 mesh：m_Mesh 里存的是 instanceID，GC 把 mesh 收了就是悬空 id，
+    // Unity 找不到 mesh -> 不建顶点缓存 -> 不渲染（build-110 实测 +0x1d8 一直是 0）。
+    if (g_api.gchandle_new && bm.mesh) {
+        uint32_t h = g_api.gchandle_new((Il2CppObject*)bm.mesh, true);
+        if (h) out.pinHandles.push_back(h);
+        LLOG("[LOADER] mesh pinned handle=%u", h);
+    }
     LLOG("[LOADER] mesh verts=%d tris=%d bones=%d submeshes=%d",
          out.verts, out.tris, bm.boneCount, bm.subMeshes);
 
@@ -152,6 +160,16 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     if (mmd::build_materials(model, tex, mats, logf_cb)) {
         out.materials = mats.created;
         LLOG("[LOADER] materials=%d shader='%s'", mats.created, mats.shaderName);
+        // 材质同样钉住（SMR 的 sharedMaterials 只是 managed 引用，native 侧
+        // 的 m_Materials 是 PPtr，GC 收了就渲染不出）
+        if (g_api.gchandle_new) {
+            for (void* mp : mats.items) {
+                if (!mp) continue;
+                uint32_t h = g_api.gchandle_new((Il2CppObject*)mp, true);
+                if (h) out.pinHandles.push_back(h);
+            }
+            LLOG("[LOADER] materials pinned: %zu handles", out.pinHandles.size());
+        }
     } else {
         LLOG("[LOADER] 材质创建失败，模型会是一个默认色块");
     }

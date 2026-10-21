@@ -369,6 +369,21 @@ bool create_self_smr(void* modelTransform,
         (void)sn;
     }
 
+    // get_sharedMesh 读回验证（mesh 有没有被 GC 收掉）
+    if (out.smr) {
+        static void* mGetMesh = nullptr;
+        if (!mGetMesh) {
+            void* smrCls = uo::u_class("UnityEngine", "SkinnedMeshRenderer");
+            if (smrCls) mGetMesh = uo::u_method(smrCls, "get_sharedMesh", 0);
+        }
+        if (mGetMesh) {
+            void* m = uo::u_call(out.smr, mGetMesh, nullptr);
+            GLOG("[SELF] get_sharedMesh 读回 = %p%s", m, m ? "" : "  (NULL! mesh 丢了)");
+        } else {
+            GLOG("[SELF] get_sharedMesh 方法缺失");
+        }
+    }
+
     dump_visibility(out, sourceSmr, modelTransform);
     GLOG("[SELF] done: meshId=%d bones=%d mats=%d", meshId, boneCount, matCount);
     return true;

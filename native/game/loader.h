@@ -12,6 +12,7 @@
 // =====================================================================
 #pragma once
 #include <cstring>
+#include <vector>
 
 #include "game/smr_bind.h"
 #include "mmd/mesh_builder.h"
@@ -32,6 +33,8 @@ struct LoadResult {
     int32_t meshId = 0;
     void* mesh = nullptr;
     char  error[256] = {0};
+    // 钉住 mesh / 材质的 gchandle（C++ 裸指针引用，GC 不认，必须 pin）
+    std::vector<uint32_t> pinHandles;
     mmd::Skeleton skeleton;   // 持有骨骼树（Transform 引用）
 };
 
