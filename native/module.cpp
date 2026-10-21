@@ -535,7 +535,7 @@ static bool scan_smrs() {
             x.boneCount = s.boneCount;
             samples.push_back(x);
         }
-        game::detect_layout(samples);
+        if (samples.size() >= 2) game::detect_layout(samples);
     }
 
     return !g_smrs.empty();
@@ -575,7 +575,7 @@ static void dump_smrs() {
                 game::dump_bone_names(names, 48);
             }
             if (!game::name_hook_installed()) {
-                game::install_name_hook(200);
+                game::install_name_hook(64);
             }
         }
     }
@@ -900,11 +900,17 @@ static std::string find_pmx_path() {
 // 现在只认名字里带 Body 且骨骼够多的，找不到就返回 -1，
 // 让上层回到 IDLE 继续等（进入主城后才会扫到真正的角色）。
 static int pick_target_smr() {
+    // 取骨骼最多的 Body：主城里同时有一堆 NPC/换装件（build-61 实测
+    // 166 个 SMR，第一个 Body 是 15042_02_Body_PX 只有 59 骨），
+    // 而目标角色骨架是 160+ 骨。骨骼最多那个才是正主。
+    int best = -1;
     for (size_t i = 0; i < g_smrs.size(); i++) {
         const SmrInfo& s = g_smrs[i];
-        if (s.name.find("Body") != std::string::npos && s.boneCount >= 40) return (int)i;
+        if (s.name.find("Body") == std::string::npos) continue;
+        if (s.boneCount < 40) continue;
+        if (best < 0 || s.boneCount > g_smrs[(size_t)best].boneCount) best = (int)i;
     }
-    return -1;
+    return best;
 }
 
 // ---- 真正加载 ----

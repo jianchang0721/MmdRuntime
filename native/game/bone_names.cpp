@@ -31,6 +31,7 @@ namespace {
 
 const MethodInfo* g_mGetBones = nullptr;
 void* g_nameTarget = nullptr;
+void* g_stringKlass = nullptr;   // System.String 的 klass，用来验返回值真是字符串
 bool  g_installed  = false;
 int   g_maxRecords = 0;
 int   g_records    = 0;
@@ -38,28 +39,59 @@ int   g_records    = 0;
 typedef void* (*GetNameFn)(void* self);
 GetNameFn g_origGetName = nullptr;
 
-// 把地址翻译成「模块名+偏移」。只在记录配额内调用，不进热路径。
-void describe_addr(void* addr, char* out, size_t n) {
-    out[0] = 0;
-    if (!addr) return;
+// 模块基址只在 install 时扫一次。
+//
+// 为什么不在 hook 里调 fopen：get_name 是主线程高频函数，
+// 而 stealth 自己 hook 了 fopen（读 /proc/self/maps 要全读+过滤+写 memfd）。
+// 在 hook 里做这件事 = 每次读名字都读 1.4MB maps，build-61 实测
+// 建到第 5 根骨骼就把主线程卡死了。热路径里只允许减法。
+struct ModBase { const char* tag; uintptr_t base; uintptr_t limit; };
+static ModBase g_mods[4];
+static int g_modCount = 0;
+
+uintptr_t find_module_base(const char* soname) {
     FILE* f = fopen("/proc/self/maps", "r");
-    if (!f) return;
+    if (!f) return 0;
     char line[512];
-    uintptr_t a = (uintptr_t)addr;
+    uintptr_t found = 0;
     while (fgets(line, sizeof(line), f)) {
-        unsigned long lo = 0, hi = 0;
-        char perms[8] = {0};
-        if (sscanf(line, "%lx-%lx %7s", &lo, &hi, perms) != 3) continue;
-        if (a < lo || a >= hi) continue;
-        // 路径在最后一列
-        char* p = strchr(line, '/');
-        const char* mod = p ? p : "?";
-        const char* base = strrchr(mod, '/');
-        base = base ? base + 1 : mod;
-        snprintf(out, n, "%s+0x%lx", base, (unsigned long)(a - lo));
+        if (!strstr(line, soname)) continue;
+        unsigned long lo = 0;
+        if (sscanf(line, "%lx-", &lo) != 1) continue;
+        found = (uintptr_t)lo;
         break;
     }
     fclose(f);
+    return found;
+}
+
+void snapshot_modules() {
+    struct { const char* tag; const char* soname; uintptr_t limit; } want[] = {
+        {"libil2cpp", "libil2cpp.so", 0x20000000},   // ~171MB，留余量
+        {"libunity",  "libunity.so",  0x04000000},   // ~17MB
+    };
+    g_modCount = 0;
+    for (auto& w : want) {
+        uintptr_t b = find_module_base(w.soname);
+        if (!b) continue;
+        g_mods[g_modCount].tag   = w.tag;
+        g_mods[g_modCount].base  = b;
+        g_mods[g_modCount].limit = w.limit;
+        g_modCount++;
+    }
+}
+
+// 热路径：只做区间比较
+void describe_addr(void* addr, char* out, size_t n) {
+    uintptr_t a = (uintptr_t)addr;
+    for (int i = 0; i < g_modCount; i++) {
+        if (a >= g_mods[i].base && a - g_mods[i].base < g_mods[i].limit) {
+            snprintf(out, n, "%s+0x%lx", g_mods[i].tag,
+                     (unsigned long)(a - g_mods[i].base));
+            return;
+        }
+    }
+    snprintf(out, n, "0x%lx", (unsigned long)a);
 }
 
 // 只解析返回的 Il2CppString，不调用任何 Unity API（防重入）
@@ -68,7 +100,7 @@ void copy_name(void* str, char* out, int cap) {
     if (!str || cap <= 1) return;
     char* p = (char*)str;
     int32_t len = *(int32_t*)(p + 16);
-    if (len < 0 || len > 4096) return;
+    if (len < 0 || len > 512) return;
     const uint16_t* ch = (const uint16_t*)(p + 20);
     int k = 0;
     for (int32_t i = 0; i < len && k < cap - 1; i++) {
@@ -82,6 +114,9 @@ void* hook_get_name(void* self) __attribute__((noinline));
 void* hook_get_name(void* self) {
     void* r = g_origGetName ? g_origGetName(self) : nullptr;
     if (g_records < g_maxRecords && r) {
+        // 先验 klass：对象还没初始化完时 get_name 可能返回垃圾指针，
+        // 直接读 length/chars 会踩野内存（build-61 抓到过 '???_-603305221'）。
+        if (g_stringKlass && *(void**)r != g_stringKlass) return r;
         g_records++;
         char name[128];
         copy_name(r, name, sizeof(name));
@@ -118,6 +153,13 @@ bool collect_bone_names(void* smrManaged, std::vector<BoneNameEntry>& out) {
         BLOG("[BONENAME] 骨骼数异常 %zu", n);
         return false;
     }
+
+    // 诊断：确认数组布局。build-61 实测 total 对但元素全 0，先看原始字。
+    BLOG("[BONENAME] arr=%p head=%p %p %p %p size=%zu",
+         arr, ((void**)arr)[0], ((void**)arr)[1], ((void**)arr)[2], ((void**)arr)[3], n);
+    BLOG("[BONENAME] elem[0..3]=%p %p %p %p",
+         *(void**)((char*)arr + 32), *(void**)((char*)arr + 40),
+         *(void**)((char*)arr + 48), *(void**)((char*)arr + 56));
 
     out.reserve(n);
     for (size_t i = 0; i < n; i++) {
@@ -165,6 +207,9 @@ bool install_name_hook(int maxRecords) {
 
     g_maxRecords = maxRecords > 0 ? maxRecords : 0;
     g_records = 0;
+    snapshot_modules();
+    g_stringKlass = uo::u_class("System", "String");
+    BLOG("[NAMEHOOK] String klass=%p", g_stringKlass);
     int rc = DobbyHook(target, (void*)hook_get_name, (void**)&g_origGetName);
     if (rc != 0 || !g_origGetName) {
         BLOG("[NAMEHOOK] DobbyHook 失败 rc=%d orig=%p", rc, (void*)g_origGetName);
