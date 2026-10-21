@@ -50,13 +50,13 @@ void* obj_native(void* o) {
 bool create_self_smr(void* modelTransform,
                      void* sourceSmr,
                      void* meshObj,
-                     void** bonePtrs, int boneCount,
+                     const int32_t* boneIds, int boneCount,
                      void** materials, int matCount,
                      SelfSmr& out) {
     out = SelfSmr{};
-    if (!modelTransform || !meshObj || !bonePtrs || boneCount <= 0) {
+    if (!modelTransform || !meshObj || !boneIds || boneCount <= 0) {
         GLOG("[SELF] bad args tr=%p mesh=%p ptrs=%p n=%d",
-             modelTransform, meshObj, (void*)bonePtrs, boneCount);
+             modelTransform, meshObj, (void*)boneIds, boneCount);
         return false;
     }
 
@@ -136,12 +136,13 @@ bool create_self_smr(void* modelTransform,
         }
     }
 
-    // build-102 实测：之前按 4 字节 instanceID 写，Unity 读第 0 根骨骼时把
-    // id0 | (id1 << 32) 拼成 0x0006800600000001 当指针解引用 -> SIGSEGV。
-    // native m_Bones 元素宽度是 8 字节，存的是 Transform*（managed 对象 +16）。
-    void** newBones = (void**)malloc((size_t)boneCount * sizeof(void*));
-    if (!newBones) { GLOG("[SELF] malloc bone ptrs failed"); return false; }
-    memcpy(newBones, bonePtrs, (size_t)boneCount * sizeof(void*));
+    // build-103 实测 dump：游戏原 SMR 的 m_Bones.data 前 8 个 4 字节全是
+    // 0x0004xxxx 这类小整数 -> 它就是 4 字节 instanceID 数组。
+    // 8 字节指针写法（build-103）崩在同一地址，说明元素宽度不是根因。
+    // 所以这里按 4 字节 id 写，id 从 managed Transform 的 GetInstanceID 拿。
+    int32_t* newBones = (int32_t*)malloc((size_t)boneCount * sizeof(int32_t));
+    if (!newBones) { GLOG("[SELF] malloc bone ids failed"); return false; }
+    memcpy(newBones, boneIds, (size_t)boneCount * sizeof(int32_t));
 
     int32_t oldSize = *(int32_t*)(base + L.offBoneSize);
     void*   oldData = *(void**)(base + L.offBoneData);

@@ -28,13 +28,14 @@ struct SelfSmr {
 //                 SMR 组件加到它所在的 GameObject 上，不再自己建节点。
 // sourceSmr：目标角色的 SMR（Il2CppObject*）。只用来拿 layer ——
 //            不拷 layer 的话，游戏相机 cullingMask 里没有 Default 层，模型画了也看不见。
-// bonePtrs：每根骨骼的 native Transform*（managed 对象 +16 就是 m_CachedPtr）。
-//           native m_Bones 是 8 字节/元素的指针数组，不是 4 字节 instanceID 数组
-//           （build-102 实测 fault addr 0x0006800600000001 = 两个 id 被拼成指针）
+// boneIds：每根骨骼 Transform 的 instanceID 数组。
+//          build-103 实测 dump：游戏原 SMR 的 m_Bones.data 前 8 个 4 字节全是
+//          0x0004xxxx 小整数 -> native m_Bones 就是 4 字节 instanceID 数组，
+//          不是 8 字节指针数组（8 字节写法崩在同一地址，证明宽度不是根因）。
 bool create_self_smr(void* modelTransform,
                      void* sourceSmr,
                      void* meshObj,
-                     void** bonePtrs, int boneCount,
+                     const int32_t* boneIds, int boneCount,
                      void** materials, int matCount,
                      SelfSmr& out);
 

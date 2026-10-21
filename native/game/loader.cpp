@@ -195,7 +195,7 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         LLOG("[LOADER] materials to SMR: %d (raw %zu, null filtered)",
              matsN, mats.items.size());
         if (!game::create_self_smr(modelRoot, smr.managed, bm.mesh,
-                                   bonePtrs.data(), (int)nb,
+                                   ids.data(), (int)nb,
                                    matsPtr, matsN, self)) {
             set_err(out, "create_self_smr failed");
             return false;
