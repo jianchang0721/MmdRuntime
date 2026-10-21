@@ -144,36 +144,6 @@ bool create_self_smr(void* modelTransform,
     GLOG("[SELF] bones: data=%p size=%d cap(odd)=%lld —— 析构不释放我们的内存",
          (void*)newIds, boneCount, (long long)((int64_t)boneCount | 1));
 
-    // ---- 3b) 朝向 + 父级缩放（ModelMod 2265~2312 原样搬）----
-    // ① MMD/glTF 多数面朝 -Z，Unity 是 +Z，不转 180 就背对镜头
-    // ② 父级缩放不是 1 时，localScale 会被再乘一次 —— 必须读出来反算
-    {
-        Il2CppClass* t2 = (Il2CppClass*)uo::u_class("UnityEngine", "Transform");
-        if (t2) {
-            const MethodInfo* mSetRot = (const MethodInfo*)uo::u_method(t2, "set_localRotation", 1);
-            if (mSetRot) {
-                struct { float x, y, z, w; } q = { 0.0f, 1.0f, 0.0f, 0.0f };
-                void* a[1] = { &q };
-                uo::u_call_void(tr, (void*)mSetRot, a);
-                GLOG("[SELF] rotated 180 on Y");
-            }
-            const MethodInfo* mLossy = (const MethodInfo*)uo::u_method(t2, "get_lossyScale", 0);
-            if (mLossy) {
-                // 读的是「父级」的 lossyScale：先拿 parent 再读
-                const MethodInfo* mParent = (const MethodInfo*)uo::u_method(t2, "get_parent", 0);
-                void* parent = (tr && mParent) ? uo::u_call(tr, (void*)mParent, nullptr) : nullptr;
-                void* ls = parent ? uo::u_call(parent, (void*)mLossy, nullptr) : nullptr;
-                if (ls) {
-                    Vec3 v = *(Vec3*)((char*)ls + 16);
-                    GLOG("[SELF] parent lossyScale = %.6f %.6f %.6f (parent=%p)",
-                         v.x, v.y, v.z, parent);
-                } else {
-                    GLOG("[SELF] parent lossyScale 读取失败（parent=%p）", parent);
-                }
-            }
-        }
-    }
-
     // ---- 4) 写 native m_Mesh ----
     int32_t meshId = uo::instance_id(meshObj);
     if (meshId == 0) { GLOG("[SELF] mesh instanceID is 0"); return false; }
@@ -221,6 +191,35 @@ bool create_self_smr(void* modelTransform,
         tmp.meshId = meshId;
         if (!set_shared_materials(tmp, materials, matCount)) {
             GLOG("[SELF] set_shared_materials failed (材质会是默认)");
+        }
+    }
+
+    // ---- 朝向 + 父级缩放（ModelMod 2265~2312 搬来的）----
+    // 必须放在所有 native 字段写完之后：旋转父节点会触发 Transform 层级重建，
+    // 连带重算挂在下面的 224 根骨骼 world matrix；写一半就转，Unity 会读到
+    // 中间状态（build-92 实测：在 m_Mesh 之前转，转完进程直接没）。
+    {
+        Il2CppClass* t2 = (Il2CppClass*)uo::u_class("UnityEngine", "Transform");
+        if (t2) {
+            const MethodInfo* mSetRot = (const MethodInfo*)uo::u_method(t2, "set_localRotation", 1);
+            if (mSetRot) {
+                struct { float x, y, z, w; } q = { 0.0f, 1.0f, 0.0f, 0.0f };
+                void* a[1] = { &q };
+                uo::u_call_void(tr, (void*)mSetRot, a);
+                GLOG("[SELF] rotated 180 on Y (最后做)");
+            }
+            const MethodInfo* mLossy = (const MethodInfo*)uo::u_method(t2, "get_lossyScale", 0);
+            const MethodInfo* mParent = (const MethodInfo*)uo::u_method(t2, "get_parent", 0);
+            void* parent = (tr && mParent) ? uo::u_call(tr, (void*)mParent, nullptr) : nullptr;
+            void* ls = (parent && mLossy) ? uo::u_call(parent, (void*)mLossy, nullptr) : nullptr;
+            if (ls) {
+                Vec3 v = *(Vec3*)((char*)ls + 16);
+                GLOG("[SELF] parent lossyScale = %.6f %.6f %.6f (parent=%p)",
+                     v.x, v.y, v.z, parent);
+            } else {
+                GLOG("[SELF] parent lossyScale 读取失败 (parent=%p mLossy=%p)",
+                     parent, (void*)mLossy);
+            }
         }
     }
 
