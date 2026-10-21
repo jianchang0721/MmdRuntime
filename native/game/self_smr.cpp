@@ -128,8 +128,8 @@ bool create_self_smr(void* modelTransform,
     int64_t oldCap  = *(int64_t*)(base + L.offBoneCap);
     GLOG("[SELF] old bones data=%p size=%d cap=%lld", oldData, oldSize, (long long)oldCap);
 
-    // 登记给析构 hook（自建 SMR 销毁时把字段还原，避免 Unity free 我们的内存）
-    bonehook::set_ours(newIds, oldData, oldSize, oldCap);
+    // 不装 hook：capacity 最低位置 1 就够 Unity 跳过 Deallocate（见下面）。
+    // build-88 实测 DobbyHook 在 libunity 上 abort，这条路彻底不走了。
 
     *(void**)(base + L.offBoneData) = newIds;
     *(int32_t*)(base + L.offBoneSize) = boneCount;

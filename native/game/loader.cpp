@@ -81,10 +81,11 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         return false;
     }
 
-    // ---- ① 析构保护：不再装 hook，改用 capacity 奇偶位 ----
-    // build-88 实测：DobbyHook 在 libunity 上 abort()（tombstone 栈
-    #03 DobbyHook → #02 GenerateRelocatedCode → #01 GenRelocateCodeAndBranch → #00 abort）。
-    // 该地址已经被别的 hook 占过（orig=0x7abe3b0114 落在 libunity 段外）。
+    // ---- ① 析构保护：不装 hook，改用 capacity 奇偶位 ----
+    // build-88 实测：DobbyHook 在 libunity 上 abort()，
+    // tombstone 栈：DobbyHook -> GenerateRelocatedCode -> GenRelocateCodeAndBranch -> abort。
+    // 该地址已经被别的 hook 占过（orig=0x7abe3b0114 落在 libunity 段外），
+    // Dobby 改写别人的 trampoline 时分析不出结构就 abort。
     //
     // 自建 SMR 的 m_Bones 本来就是 data=0x0 size=0 cap=0，没有任何需要
     // Unity 释放的旧内存，所以根本不需要 hook —— 只要 capacity 最低位置 1，
