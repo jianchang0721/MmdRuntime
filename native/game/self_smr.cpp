@@ -136,10 +136,11 @@ static void dump_visibility(SelfSmr& s, void* sourceSmr, void* modelRoot) {
         void* skin = (void*)(*rslot);
         if (skin && ((uintptr_t)skin > 0x100000000ULL)) {
             uint32_t* w = (uint32_t*)skin;
-            GLOG("[VIS] skin[0..7] = %08x %08x %08x %08x %08x %08x %08x %08x",
-                 w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
-            GLOG("[VIS] skin[8..15] = %08x %08x %08x %08x %08x %08x %08x %08x",
-                 w[8], w[9], w[10], w[11], w[12], w[13], w[14], w[15]);
+            for (int off = 0; off < 0x100; off += 32) {
+                GLOG("[VIS] skin+0x%02x: %08x %08x %08x %08x %08x %08x %08x %08x",
+                     off, w[off/4+0], w[off/4+1], w[off/4+2], w[off/4+3],
+                     w[off/4+4], w[off/4+5], w[off/4+6], w[off/4+7]);
+            }
         }
     }
 
@@ -362,13 +363,10 @@ bool create_self_smr(void* modelTransform,
         uint8_t* sn = (uint8_t*)out.native;
         if (rn) {
             uint64_t rv = *(uint64_t*)(rn + 0x1d8);
-            if (rv) {
-                *(uint64_t*)(sn + 0x1d8) = rv;
-                GLOG("[SELF] +0x1d8 <- ref 0x%llx (共享 skin 试验)", (unsigned long long)rv);
-            } else {
-                GLOG("[SELF] +0x1d8 ref 也是 0，跳过");
-            }
+            GLOG("[SELF] +0x1d8 ref=0x%llx（共享会崩：162 vs 224 骨骼，跳过写入）",
+                 (unsigned long long)rv);
         }
+        (void)sn;
     }
 
     dump_visibility(out, sourceSmr, modelTransform);
