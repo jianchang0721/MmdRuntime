@@ -21,6 +21,8 @@
 
 #include <dlfcn.h>
 #include <pthread.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 #include <cmath>
 #include <cstring>
@@ -162,6 +164,16 @@ void RenderFrame(EGLDisplay dpy, EGLSurface surf) {
         g_DisplayW = w;
         g_DisplayH = h;
         LOGI("surface resized %dx%d", w, h);
+    }
+
+    // 渲染线程身份：跟游戏侧 tick 的 tid 对比，确认是不是同一个线程。
+    // Mesh..ctor 崩在 tick 线程，怀疑 Unity 要求 UnityMain 线程。
+    {
+        static bool tidLogged = false;
+        if (!tidLogged) {
+            tidLogged = true;
+            LOGI("render thread tid=%d", (int)syscall(SYS_gettid));
+        }
     }
 
     ImGuiRuntime::BeginFrameInput();

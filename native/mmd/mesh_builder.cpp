@@ -125,7 +125,7 @@ bool init_mesh_classes(MeshClasses& mc) {
 
 }  // namespace
 
-bool build_mesh(const Model& model, const Skeleton& skel, void* templateMesh, BuiltMesh& out) {
+bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
     out = BuiltMesh{};
 
     const size_t nv = model.verts.size();
@@ -139,40 +139,37 @@ bool build_mesh(const Model& model, const Skeleton& skel, void* templateMesh, Bu
     MeshClasses mc;
     if (!init_mesh_classes(mc)) return false;
 
-    // ---- 1) 创建 Mesh ----
+    // ---- 1) new Mesh ----
     //
-    // 不调 Mesh..ctor()：Unity 2018 IL2CPP 下它要创建 native Mesh，
-    // build-57 实测直接让进程静默退出（无 tombstone），日志停在
-    // "step0b Mesh..ctor..." 之后再无下文。
-    //
-    // 改用 Object.Instantiate 克隆一个现成的 Mesh —— native 对象交给
-    // Unity 自己创建，稳得多（还自带正确的 native 类型）。
-    void* mesh = nullptr;
-    if (templateMesh) {
-        void* objCls = uo::u_class("UnityEngine", "Object");
-        void* mInst = objCls
-                    ? uo::u_method_typed(objCls, "Instantiate", 1, "Object")
-                    : nullptr;
-        MLOG("[MESH] step0 Instantiate(template=%p) fn=%p", templateMesh, mInst);
-        if (mInst) {
-            void* a[1] = { &templateMesh };
-            mesh = uo::u_call(nullptr, mInst, a);
-        }
-        MLOG("[MESH] step0 done cloned=%p", mesh);
+    // 走 object_new + Mesh..ctor()，这是原定 V3 路线的基础，不绕。
+    // build-57 实测崩在 ctor 内部（日志停在 step0b 后，无 tombstone），
+    // 下面把每一步的状态都打出来，正面定位。
+    MLOG("[MESH] step0 object_new(Mesh) class=%p", (void*)mc.meshCls);
+    void* mesh = uo::u_new_object(mc.meshCls);
+    MLOG("[MESH] step0 done mesh=%p klass=%p", mesh,
+         mesh ? *(void**)mesh : nullptr);
+    if (!mesh) { MLOG("[MESH] object_new failed"); return false; }
+
+    if (!mc.mCtor) {
+        MLOG("[MESH] FATAL: Mesh 无可用 .ctor");
+        return false;
     }
 
-    if (!mesh) {
-        // 模板没有或克隆失败：回退到 object_new + ctor（可能会崩，但试一下）
-        MLOG("[MESH] 克隆失败，回退 object_new + Mesh..ctor");
-        mesh = uo::u_new_object(mc.meshCls);
-        if (mesh && mc.mCtor) {
-            MLOG("[MESH] step0b Mesh..ctor...");
-            uo::u_call_void(mesh, mc.mCtor, nullptr);
-            MLOG("[MESH] step0b done");
+    // 直接调 runtime_invoke，把异常和返回值都掰开看：
+    // invoke_void 只报有没有异常，这里额外确认它到底进没进去。
+    MLOG("[MESH] step0b Mesh..ctor mCtor=%p obj=%p ...", (void*)mc.mCtor, mesh);
+    {
+        Il2CppException* exc = nullptr;
+        Il2CppObject* r = g_api.runtime_invoke((const MethodInfo*)mc.mCtor, mesh, nullptr, &exc);
+        if (exc) {
+            void* ecl = *(void**)exc;
+            const char* en = ecl && g_api.class_get_name
+                           ? g_api.class_get_name((Il2CppClass*)ecl) : "?";
+            MLOG("[MESH] step0b THREW %s", en ? en : "?");
+            return false;
         }
+        MLOG("[MESH] step0b done ret=%p", (void*)r);
     }
-
-    if (!mesh) { MLOG("[MESH] FATAL: 创建 Mesh 失败"); return false; }
 
     // ---- 1.5) 打印 set_vertices 的真实参数类型 ----
     // 崩在第一次灌顶点上，先确认签名是 Vector3[] 还是 Vector3[]&

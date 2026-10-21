@@ -967,7 +967,14 @@ static void refresh_status() {
 }
 
 extern "C" void native_tick() {
-    if (g_t0 == 0) { g_t0 = now_ms(); return; }
+    if (g_t0 == 0) {
+        g_t0 = now_ms();
+        // 线程身份：确认 tick 到底跑在哪个线程。
+        // GameObject 创建能成功，但 Mesh..ctor 崩了 ——
+        // 怀疑是 Java 主线程 ≠ UnityMain 渲染线程。
+        L("[PERF] tick thread tid=%d", (int)syscall(SYS_gettid));
+        return;
+    }
     g_ticks++;
 
     // 每 2 秒看一次 tracer。被 ptrace 时我们什么都不做，
