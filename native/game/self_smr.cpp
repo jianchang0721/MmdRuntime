@@ -7,7 +7,6 @@
 #include <cstring>
 
 #include "logsink.h"
-#include "bone_hook.h"
 #include "smr_bind.h"
 #include "smr_layout.h"
 #include "unity/il2cpp_api.h"
