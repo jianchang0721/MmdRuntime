@@ -303,20 +303,33 @@ bool create_self_smr(void* modelTransform,
     // 这就是「日志全 SUCCESS、屏幕全空白」的直接原因。
     // native 对比把字段钉死在 +0xcc/+0xd0/+0xd4（ref 的三个 float 与
     // managed get_bounds() 的 extents 完全一致）；center 在 +0xc0..+0xc8。
+    // build-106 实测：+0xcc 是 world bounds 的缓存，写它没用（get_bounds 仍返回零）。
+    // 真正的 localBounds 在 +0xd8（center 3 float + extents 3 float），
+    // 特征：center 接近 0、extents 非零；+0x270 有一份同样的拷贝，两处都写。
     {
         uint8_t* rn = sourceSmr ? (uint8_t*)obj_native(sourceSmr) : nullptr;
+        uint8_t* sn = (uint8_t*)out.native;
         if (rn) {
-            float* re = (float*)(rn + 0xcc);
-            float* se = (float*)((uint8_t*)out.native + 0xcc);
-            se[0] = re[0]; se[1] = re[1]; se[2] = re[2];
+            memcpy(sn + 0xd8, rn + 0xd8, 24);
+            memcpy(sn + 0x270, rn + 0x270, 24);
+            float* sc = (float*)(sn + 0xd8);
+            float* se = (float*)(sn + 0xe4);
             if (se[0] <= 0.0f || se[1] <= 0.0f || se[2] <= 0.0f) {
-                se[0] = 0.9f; se[1] = 1.0f; se[2] = 0.9f;
+                sc[0] = 0; sc[1] = 10; sc[2] = 0;
+                se[0] = 10; se[1] = 12; se[2] = 10;
+                memcpy(sn + 0x270, sn + 0xd8, 24);
             }
-            GLOG("[SELF] m_LocalBounds.extents <- (%.3f, %.3f, %.3f)", se[0], se[1], se[2]);
+            float* c2 = (float*)(sn + 0xd8);
+            float* e2 = (float*)(sn + 0xe4);
+            GLOG("[SELF] localBounds <- c=(%.3f, %.3f, %.3f) e=(%.3f, %.3f, %.3f)",
+                 c2[0], c2[1], c2[2], e2[0], e2[1], e2[2]);
         } else {
-            float* se = (float*)((uint8_t*)out.native + 0xcc);
-            se[0] = 0.9f; se[1] = 1.0f; se[2] = 0.9f;
-            GLOG("[SELF] m_LocalBounds.extents <- 默认 (0.9, 1.0, 0.9)（没有 ref 可抄）");
+            float* c2 = (float*)(sn + 0xd8);
+            float* e2 = (float*)(sn + 0xe4);
+            c2[0] = 0; c2[1] = 10; c2[2] = 0;
+            e2[0] = 10; e2[1] = 12; e2[2] = 10;
+            memcpy(sn + 0x270, sn + 0xd8, 24);
+            GLOG("[SELF] localBounds <- 默认 c=(0,10,0) e=(10,12,10)");
         }
     }
 
