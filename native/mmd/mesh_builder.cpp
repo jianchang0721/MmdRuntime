@@ -349,6 +349,25 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
         }
 
         MLOG("[MESH] step4/8 triangles, subs=%zu...", subs.size());
+
+        // ---- 数据校验：三角形索引越界是换 mesh 后崩掉的头号嫌疑 ----
+        // PMX 用 0xFFFF 表示“无引用”，如果解析时没转成 -1，就会变成 65535，
+        // 远大于 nv(21804) —— Unity 蒙皮时直接踩野内存。
+        {
+            int32_t maxIdx = -1;
+            size_t bad = 0;
+            for (int32_t v : model.faceVertex) {
+                if (v < 0 || (size_t)v >= nv) bad++;
+                else if (v > maxIdx) maxIdx = v;
+            }
+            MLOG("[MESH] validate tris: nv=%zu nf=%zu maxIndex=%d badIndex=%zu",
+                 nv, model.faceVertex.size(), maxIdx, bad);
+            for (size_t i = 0; i < subs.size(); i++) {
+                if (subs[i].count <= 0)
+                    MLOG("[MESH] WARNING submesh %zu count=0 (start=%d)", i, subs[i].start);
+            }
+        }
+
         bool multiOk = false;
         if (mc.mSetSubMeshCount && mc.mSetTrianglesSub && subs.size() > 1) {
             int32_t sn = (int32_t)subs.size();

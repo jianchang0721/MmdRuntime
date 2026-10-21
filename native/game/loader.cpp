@@ -156,7 +156,7 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     // 两个都 false 才是完整流程。
     // =============================================================
     const bool kSkipExpand   = false;
-    const bool kSkipSwapMesh = true;
+    const bool kSkipSwapMesh = false;   // 恢复完整流程；崩溃后会看到 validate 日志
 
     // ---- ⑥ 扩容 + 写 m_Bones ----
     if (!kSkipExpand) {
