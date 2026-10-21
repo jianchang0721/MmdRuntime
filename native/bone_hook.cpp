@@ -103,8 +103,21 @@ uintptr_t maps_base(const char* soname) {
     return lowest;
 }
 
-// 在 libunity.so 的可执行段里按指令特征扫
-void* scan_signature(uintptr_t base) {
+// 目标地址是否已经被别人 hook 过（跳板/b 跳/br/brk）。
+// 只看前 4 字节：Dobby/其它 hook 框架改写后通常是 b 或 br。
+bool looks_hooked(void* addr) {
+    if (!addr) return true;
+    uint32_t w = *(const uint32_t*)addr;
+    if ((w & 0xFC000000) == 0x14000000) return true;   // b  imm26
+    if ((w & 0xFFFFFC1F) == 0xD61F0000) return true;   // br xN
+    if ((w & 0xFFE0001F) == 0xD4200000) return true;   // brk #imm
+    return false;
+}
+
+// 在 libunity.so 的可执行段里按指令特征扫。
+// outHits 返回命中总数 —— 只有 hits==1 才能信，见 install()。
+void* scan_signature(uintptr_t base, int* outHits) {
+    if (outHits) *outHits = 0;
     if (!base) return nullptr;
     ElfW(Ehdr)* eh = (ElfW(Ehdr)*)base;
     if (memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0) return nullptr;
@@ -134,6 +147,7 @@ void* scan_signature(uintptr_t base) {
         }
     }
 
+    if (outHits) *outHits = hits;
     HLOG("[BONEHOOK] scan done: hits=%d found=%p", hits, found);
     return found;
 }
@@ -147,20 +161,34 @@ bool install() {
     if (!base) { HLOG("[BONEHOOK] libunity.so not in maps"); return false; }
     HLOG("[BONEHOOK] libunity base=%p", (void*)base);
 
-    void* addr = scan_signature(base);
-    if (!addr) {
-        HLOG("[BONEHOOK] signature not found, hook skipped");
+    int hits = 0;
+    void* addr = scan_signature(base, &hits);
+
+    // build-94 实测：这条特征码在 libunity 里命中 697 处，取第一个直接
+    // hook 到了偏移 0xD41D8 的无关函数，Dobby 改写后 0.8 秒崩在 Mesh..ctor。
+    // 纪律：只有「唯一命中」才敢信，跟 smr_layout 的探测一个原则。
+    if (!addr || hits != 1) {
+        HLOG("[BONEHOOK] hits=%d (需要唯一命中) -> 放弃 hook，靠 capacity bit0 兜底", hits);
         return false;
     }
-    g_hookAddr = addr;
 
-    // build-88 tombstone 实证：DobbyHook -> InterceptRouting::GenerateRelocatedCode
-    // -> GenRelocateCodeAndBranch -> abort（目标地址已被别人 hook，Dobby 改写
-    // 别人的 trampoline 直接崩）。所以这里只保留特征码扫描结果当诊断，不装 hook。
-    // 自建 SMR 的 m_Bones 内存改为 capacity bit0=1，让 Unity 析构跳过 Deallocate
-    // （见 self_smr.cpp 的 capOdd）。
-    HLOG("[BONEHOOK] dtor addr=%p, DobbyHook DISABLED (build-88 abort)", addr);
-    return false;
+    // 已被别人 hook 过的地址：Dobby 改写别人的 trampoline 会 abort（build-88）。
+    if (looks_hooked(addr)) {
+        HLOG("[BONEHOOK] dtor @%p 已被别人 hook (前4字节像跳板) -> 放弃", addr);
+        return false;
+    }
+
+    g_hookAddr = addr;
+    int rc = DobbyHook(addr, (void*)hook_body, (void**)&g_orig);
+    if (rc != 0 || !g_orig) {
+        HLOG("[BONEHOOK] DobbyHook failed rc=%d orig=%p -> 放弃", rc, (void*)g_orig);
+        g_hookAddr = nullptr;
+        return false;
+    }
+
+    g_installed = true;
+    HLOG("[BONEHOOK] hooked bones dtor @%p orig=%p (hits=1)", addr, (void*)g_orig);
+    return true;
 }
 
 void set_ours(void* ourData, void* origData, int32_t origSize, int64_t origCap) {
