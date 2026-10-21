@@ -133,8 +133,14 @@ bool create_self_smr(void* modelTransform,
 
     *(void**)(base + L.offBoneData) = newIds;
     *(int32_t*)(base + L.offBoneSize) = boneCount;
-    *(int64_t*)(base + L.offBoneCap) = (int64_t)boneCount;
+    // capacity 最低位置 1 = 「这块内存不归 Unity 管，析构时跳过 Deallocate」。
+    // 这是 ModelMod 阶段挖出来的容器析构行为（读 m_Bones+0x18 的 bit0），
+    // 实测 Unity 自扩容的 capacity 恒偶数，bit0 正是留给这个标志。
+    // 用它可以完全不要 bone_hook，避开 build-88 那个 DobbyHook abort。
+    *(int64_t*)(base + L.offBoneCap) = (int64_t)boneCount | 1;
     out.bones = boneCount;
+    GLOG("[SELF] bones: data=%p size=%d cap(odd)=%lld —— 析构不释放我们的内存",
+         (void*)newIds, boneCount, (long long)((int64_t)boneCount | 1));
 
     // ---- 4) 写 native m_Mesh ----
     int32_t meshId = uo::instance_id(meshObj);

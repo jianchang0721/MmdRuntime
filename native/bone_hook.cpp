@@ -154,10 +154,41 @@ bool install() {
     }
     g_hookAddr = addr;
 
+    // 已 hook 检测：orig 指针必须落在 libunity 自己的段里。
+    // build-88 实测：orig=0x7abe3b0114 而 base=0x7492c1d000 —— 拿到的是别的 hook
+    // 留下的 trampoline。这时候再 DobbyHook 一次，GenRelocateCodeAndBranch
+    // 分析不出结构直接 abort()（tombstone: DobbyHook → GenerateRelocatedCode → abort）。
+    //
+    // 判据：libunity 的文件大小上限按 64MB 算（实测 17MB），
+    // 超出就认为已经被 hook 过，本次直接跳过。
+    {
+        uintptr_t a = (uintptr_t)addr;
+        if (a < base || a - base > 0x4000000ULL) {
+            HLOG("[BONEHOOK] 命中点 %p 不在 libunity 段内（base=%p），跳过 hook",
+                 addr, (void*)base);
+            return false;
+        }
+        HLOG("[BONEHOOK] 命中点 %p 在 libunity 内（+0x%lx）",
+             addr, (unsigned long)(a - base));
+    }
+
     int rc = DobbyHook(addr, (void*)hook_body, (void**)&g_orig);
     if (rc != 0 || !g_orig) {
         HLOG("[BONEHOOK] DobbyHook failed rc=%d orig=%p", rc, (void*)g_orig);
         return false;
+    }
+
+    // hook 完再验一次 orig：必须是 libunity 段内的原始指令。
+    // 落到段外说明它已经被别人 hook 过（我们 hook 的是别人的 trampoline），
+    // 立刻回滚，别让 abort 发生。
+    {
+        uintptr_t o = (uintptr_t)g_orig;
+        if (o < base || o - base > 0x4000000ULL) {
+            HLOG("[BONEHOOK] 撤销：orig=%p 在 libunity 段外（已被 hook 过）", g_orig);
+            DobbyDestroy(addr);
+            g_orig = nullptr;
+            return false;
+        }
     }
 
     g_installed = true;

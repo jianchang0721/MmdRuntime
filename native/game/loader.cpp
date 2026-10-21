@@ -81,12 +81,15 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         return false;
     }
 
-    // ---- ① hook 必须先装 ----
-    if (!bonehook::install()) {
-        set_err(out, "bone hook install failed (扩容后析构会崩，直接放弃)");
-        return false;
-    }
-    LLOG("[LOADER] bone hook addr=%p", bonehook::found_address());
+    // ---- ① 析构保护：不再装 hook，改用 capacity 奇偶位 ----
+    // build-88 实测：DobbyHook 在 libunity 上 abort()（tombstone 栈
+    #03 DobbyHook → #02 GenerateRelocatedCode → #01 GenRelocateCodeAndBranch → #00 abort）。
+    // 该地址已经被别的 hook 占过（orig=0x7abe3b0114 落在 libunity 段外）。
+    //
+    // 自建 SMR 的 m_Bones 本来就是 data=0x0 size=0 cap=0，没有任何需要
+    // Unity 释放的旧内存，所以根本不需要 hook —— 只要 capacity 最低位置 1，
+    // Unity 析构时就会跳过 Deallocate（self_smr.cpp 里已经这么做了）。
+    // hook 只在走老路（改游戏 SMR）时才需要，这里直接跳过。
 
     // ---- ② Unity 对象层 ----
     if (!uo::ready() && !uo::init()) {
