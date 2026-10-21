@@ -12,6 +12,7 @@
 #include "bone_hook.h"
 #include "mmd/material.h"
 #include "mmd/texture.h"
+#include "unity/il2cpp_api.h"
 #include "unity/unity_objects.h"
 
 #define LTAG "MmdLoader"
@@ -20,6 +21,24 @@
 namespace game {
 
 namespace {
+// 加载期间禁用 il2cpp GC。
+//
+// build-71 实测：第 7 张 2048x2048 贴图（u_new_array 16MB）直接卡死，
+// load average 飙到 134。原因是 GC 被触发后要等所有线程到 safepoint，
+// 而 UnityMain 正在跑我们的 native tick（不在托管代码里）—— 永远到不了，
+// 于是 GC 线程和主线程互相等。
+//
+// 另一个好处：数组不会被中途回收（之前踩过「缓存 Il2CppArray 几帧后变野指针」）。
+struct GcGuard {
+    bool on = false;
+    GcGuard() {
+        if (g_api.gc_disable) { g_api.gc_disable(); on = true; }
+    }
+    ~GcGuard() {
+        if (on && g_api.gc_enable) g_api.gc_enable();
+    }
+};
+
 void set_err(LoadResult& out, const char* msg) {
     snprintf(out.error, sizeof(out.error), "%s", msg ? msg : "unknown");
     LLOG("[LOADER] FAILED: %s", out.error);
@@ -43,6 +62,10 @@ void logf_cb(const char* fmt, ...) {
 bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
                          Smr& smr, void* roleRoot, LoadResult& out) {
     out = LoadResult{};
+
+    // 整个加载过程禁用 GC（贴图 16MB 数组一分配就会触发，不禁必死锁）
+    GcGuard gcGuard;
+    LLOG("[LOADER] GC %s for this load", gcGuard.on ? "disabled" : "disable-api-missing");
 
     if (!smr.native) { set_err(out, "SMR native pointer is null"); return false; }
     if (model.verts.empty() || model.bones.empty()) {

@@ -53,6 +53,13 @@ typedef Il2CppObject*         (*fn_runtime_invoke)(const MethodInfo*, void*, voi
 typedef Il2CppString*         (*fn_string_new)(const char*);
 // 显式长度版本：内部不走 strlen，名字串异常也不会把天文数字喂给分配器
 typedef Il2CppString*         (*fn_string_new_len)(const char*, int32_t);
+// GC 控制：加载期间必须关掉。
+// 原因（build-71 实测）：u_new_array(16MB) 触发 GC，GC 要等所有线程到 safepoint，
+// 而 UnityMain 正在跑我们的 native tick（不在托管代码里）→ 死锁，load average 134。
+typedef void                  (*fn_gc_disable)();
+typedef void                  (*fn_gc_enable)();
+typedef uint32_t              (*fn_gchandle_new)(Il2CppObject*, bool);
+typedef void                  (*fn_gchandle_free)(uint32_t);
 typedef Il2CppObject*         (*fn_object_new)(Il2CppClass*);
 typedef Il2CppClass*          (*fn_object_get_class)(Il2CppObject*);
 typedef Il2CppArray*          (*fn_array_new)(Il2CppClass*, size_t);
@@ -86,6 +93,10 @@ struct Il2CppApi {
     fn_runtime_invoke            runtime_invoke;
     fn_string_new                string_new;
     fn_string_new_len            string_new_len;
+    fn_gc_disable                gc_disable;
+    fn_gc_enable                 gc_enable;
+    fn_gchandle_new              gchandle_new;
+    fn_gchandle_free             gchandle_free;
     fn_object_new                object_new;
     fn_object_get_class          object_get_class;
     fn_array_new                 array_new;

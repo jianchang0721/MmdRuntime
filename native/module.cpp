@@ -245,6 +245,10 @@ static bool bind_api() {
     // 显式长度版本：内部不做 strlen，名字异常也不会报名天文数字。
     // build-59 的 malloc(2^64-9330080) 就是 string_new 的 strlen 坑。
     B(string_new_len,           "il2cpp_string_new_len");
+    B(gc_disable,               "il2cpp_gc_disable");
+    B(gc_enable,                "il2cpp_gc_enable");
+    B(gchandle_new,             "il2cpp_gchandle_new");
+    B(gchandle_free,            "il2cpp_gchandle_free");
     B(object_get_class,         "il2cpp_object_get_class");
     B(type_get_object,          "il2cpp_type_get_object");
 
