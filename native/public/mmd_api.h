@@ -103,6 +103,14 @@ typedef struct MmdApi {
     int  (*camera_touch)(int action, int pointerId, float x, float y, float vw, float vh);
     // 拉近拉远（滑条用，单位世界单位）
     void (*camera_zoom)(float d);
+
+    // 在 UnityMain 线程上跑一帧。UI so 的 eglSwapBuffers hook 每帧调。
+    //
+    // 为什么必需：nativeTick 跑在 Java 主线程，而 Unity 的 native
+    // 对象创建（Mesh..ctor 等）只能在 UnityMain 线程做。
+    // 实测：Java 主线程 tid=724，UnityMain tid=1428，两者不同；
+    // GameObject..ctor 能过，Mesh..ctor 直接静默退出。
+    void (*render_tick)(void);
 } MmdApi;
 
 // 唯一导出符号

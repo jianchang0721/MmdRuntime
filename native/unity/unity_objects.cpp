@@ -25,6 +25,7 @@ Il2CppClass* g_trClass      = nullptr;   // UnityEngine.Transform
 Il2CppClass* g_objClass     = nullptr;   // UnityEngine.Object
 
 const MethodInfo* g_mGoCtorString  = nullptr;  // GameObject::.ctor(string)
+const MethodInfo* g_mGoCtorEmpty   = nullptr;  // GameObject::.ctor()  ← 优先用这个
 const MethodInfo* g_mGetTransform  = nullptr;  // GameObject::get_transform
 const MethodInfo* g_mSetParent     = nullptr;  // Transform::set_parent(Transform)
 const MethodInfo* g_mSetLocalPos   = nullptr;  // Transform::set_localPosition(Vector3)
@@ -189,6 +190,10 @@ bool init() {
     g_mGoCtorString  = find_method_typed(g_goClass, ".ctor", 1, "String");
     if (!g_mGoCtorString) g_mGoCtorString = find_method(g_goClass, ".ctor", 1);
 
+    // 无参构造优先：不传名字就不用碰 il2cpp_string_new，
+    // 也就不会被它的 strlen 坑（build-59 的 malloc(负数) 就是那来的）。
+    g_mGoCtorEmpty = find_method_own(g_goClass, ".ctor", 0, nullptr);
+
     g_mGetTransform  = find_method(g_goClass, "get_transform", 0);
     g_mSetParent     = find_method_typed(g_trClass, "set_parent", 1, "Transform");
     if (!g_mSetParent) g_mSetParent = find_method(g_trClass, "set_parent", 1);
@@ -202,9 +207,9 @@ bool init() {
         g_mGetName       = find_method(g_objClass, "get_name", 0);
     }
 
-    ULOG("[UNITYOBJ] ctor=%p getTransform=%p setParent=%p setLocalPos=%p setLocalRot=%p setLocalScale=%p",
-         (void*)g_mGoCtorString, (void*)g_mGetTransform, (void*)g_mSetParent,
-         (void*)g_mSetLocalPos, (void*)g_mSetLocalRot, (void*)g_mSetLocalScale);
+    ULOG("[UNITYOBJ] ctor(str)=%p ctor()=%p getTransform=%p setParent=%p setLocalPos=%p",
+         (void*)g_mGoCtorString, (void*)g_mGoCtorEmpty, (void*)g_mGetTransform,
+         (void*)g_mSetParent, (void*)g_mSetLocalPos);
     // 把 GameObject 所有单参 .ctor 列出来，确认到底有几个、选中的是哪个
     {
         void* iter = nullptr;
@@ -240,6 +245,39 @@ bool ready() { return g_ready; }
 void* create_node(const char* name, void* parentTransform, float lx, float ly, float lz) {
     if (!g_ready) return nullptr;
 
+    // ---- 名字防御 ----
+    //
+    // il2cpp_string_new 内部是 strlen。名字一旦没有 NUL 结尾或长度异常，
+    // 就会把一个天文数字传给分配器。build-59 实测：
+    //   malloc(18446744073100412535) failed: returning null pointer
+    //   Trying to allocate: 18446744073100412512B  MemoryLabel: TempOverflow
+    // 18446744073100412512 = 2^64 - 9330080，是个负数。
+    //
+    // 所以：先用 strnlen 封顶，再检查空串，最后才交给 il2cpp。
+    if (!name) name = "bone";
+    const size_t kMaxName = 512;
+    size_t nlen = strnlen(name, kMaxName);
+    if (nlen == 0) {
+        name = "bone";
+        nlen = 4;
+    } else if (nlen >= kMaxName) {
+        static int badNameCount = 0;
+        if (badNameCount++ < 5) {
+            ULOG("[UNITYOBJ] 名字超过 %zu 还没遇到 NUL，当坏数据处理", kMaxName);
+        }
+        name = "bone";
+        nlen = 4;
+    }
+
+    // 前几次详细打点：klass 指针、object_new 指针、名字长度
+    static int dbgCount = 0;
+    if (dbgCount < 5) {
+        dbgCount++;
+        ULOG("[UNITYOBJ] create#%d name='%s' len=%zu goCls=%p object_new=%p string_new=%p",
+             dbgCount, name, nlen, (void*)g_goClass,
+             (void*)g_api.object_new, (void*)g_api.string_new);
+    }
+
     // 1) new GameObject
     //
     // il2cpp_object_new 只分配内存、填 klass/monitor，**不跑构造函数**。
@@ -251,10 +289,22 @@ void* create_node(const char* name, void* parentTransform, float lx, float ly, f
     Il2CppObject* go = g_api.object_new ? g_api.object_new(g_goClass) : nullptr;
     if (!go) { ULOG("[UNITYOBJ] object_new failed"); return nullptr; }
 
-    Il2CppString* s = g_api.string_new ? g_api.string_new(name ? name : "mmd") : nullptr;
-    void* args[1] = { &s };
-    // 构造函数返回 void —— 只能看异常，不能看返回值
-    if (!invoke_void(g_mGoCtorString, go, args)) {
+    // 优先无参构造：不传名字 → 不调 il2cpp_string_new → 不会被 strlen 坑。
+    // 名字只用于调试，对功能没影响。
+    bool ctorOk = false;
+    if (g_mGoCtorEmpty) {
+        ctorOk = invoke_void(g_mGoCtorEmpty, go, nullptr);
+    }
+    if (!ctorOk && g_mGoCtorString) {
+        Il2CppString* s = g_api.string_new ? g_api.string_new(name) : nullptr;
+        if (s) {
+            void* args[1] = { &s };
+            ctorOk = invoke_void(g_mGoCtorString, go, args);
+        } else {
+            ULOG("[UNITYOBJ] string_new failed for '%s'", name);
+        }
+    }
+    if (!ctorOk) {
         static int ctorFails = 0;
         if (ctorFails++ < 10) {
             ULOG("[UNITYOBJ] GameObject..ctor 失败 (%s): %s",
@@ -262,6 +312,8 @@ void* create_node(const char* name, void* parentTransform, float lx, float ly, f
         }
         return nullptr;
     }
+    // 名字后补：ctor() 不传名，建完再 setName 也行，但没必要 ——
+    // 我们靠 instanceID 和指针认骨骼，不靠名字。
 
     // 2) 取 Transform
     Il2CppObject* tr = invoke(g_mGetTransform, go, nullptr);

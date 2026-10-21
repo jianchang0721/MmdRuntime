@@ -36,8 +36,11 @@ bool Skeleton::build(const Model& model, void* rootParent) {
         return false;
     }
 
+    SLOG("[SKEL] start n=%d sizeof(BoneNode)=%zu total=%zuB",
+         n, sizeof(BoneNode), sizeof(BoneNode) * (size_t)n);
     nodes_.clear();
     nodes_.resize((size_t)n);
+    SLOG("[SKEL] resized ok, nodes=%zu", nodes_.size());
     built_ = roots_ = maxDepth_ = 0;
 
     // ---- ① 全部建出来 ----

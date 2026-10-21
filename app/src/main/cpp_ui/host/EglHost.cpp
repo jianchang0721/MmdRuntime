@@ -166,15 +166,16 @@ void RenderFrame(EGLDisplay dpy, EGLSurface surf) {
         LOGI("surface resized %dx%d", w, h);
     }
 
-    // 渲染线程身份：跟游戏侧 tick 的 tid 对比，确认是不是同一个线程。
-    // Mesh..ctor 崩在 tick 线程，怀疑 Unity 要求 UnityMain 线程。
+    // 这是 UnityMain 线程。让游戏侧在这里跑一帧 —— 它要创建
+    // Mesh / SMR 等 native 对象，在 Java 主线程会直接静默退出。
     {
         static bool tidLogged = false;
         if (!tidLogged) {
             tidLogged = true;
-            LOGI("render thread tid=%d", (int)syscall(SYS_gettid));
+            LOGI("render thread tid=%d (UnityMain)", (int)syscall(SYS_gettid));
         }
     }
+    Bridge::RenderTick();
 
     ImGuiRuntime::BeginFrameInput();
     ImGui_ImplOpenGL3_NewFrame();

@@ -765,6 +765,12 @@ static int       g_ticks = 0;
 static char      g_status[256] = "init";
 static bool      g_traced = false;   // 有人在 ptrace 我们（调试器/反作弊机器人）
 
+// ---- 线程调度 ----
+// tick_body 只能在 UnityMain 线程跑：Unity 的 native 对象创建
+// （Mesh..ctor 等）在 Java 主线程会直接静默退出。
+static long long     g_lastRenderTick = 0;   // 上次 render_tick 时间
+static volatile int  g_inTick = 0;            // 防重入
+
 // ---- UI 下发的配置（mmd_get_api 的 setter 写进来，tick 消费）----
 struct UiCmd {
     int   enableReplace = 0;
@@ -966,13 +972,15 @@ static void refresh_status() {
     pthread_mutex_unlock(&g_statMtx);
 }
 
-extern "C" void native_tick() {
+// 真正的每帧逻辑。只能在 UnityMain 线程调。
+static void tick_body() {
+    if (g_inTick) return;
+    g_inTick = 1;
+
     if (g_t0 == 0) {
         g_t0 = now_ms();
-        // 线程身份：确认 tick 到底跑在哪个线程。
-        // GameObject 创建能成功，但 Mesh..ctor 崩了 ——
-        // 怀疑是 Java 主线程 ≠ UnityMain 渲染线程。
         L("[PERF] tick thread tid=%d", (int)syscall(SYS_gettid));
+        g_inTick = 0;
         return;
     }
     g_ticks++;
@@ -1165,6 +1173,22 @@ extern "C" void native_tick() {
     if (game::g_camera.enabled) game::g_camera.update();
 
     refresh_status();   // 状态快照每帧刷一次，UI 侧随时能读
+    g_inTick = 0;
+}
+
+// UI so 在 eglSwapBuffers hook 里每帧调（UnityMain 线程）
+static void api_render_tick() {
+    g_lastRenderTick = now_ms();
+    tick_body();
+}
+
+extern "C" void native_tick() {
+    // Java 主线程。Unity 对象创建不能在这跑，所以让 render_tick 干。
+    // 兜底：UI so 没加载时 2 秒内没人调 render_tick，就自己在 Java 线程
+    // 跑一次 —— 至少状态机不会卡死（代价是那几步 Unity 调用可能崩）。
+    if (now_ms() - g_lastRenderTick > 2000) {
+        tick_body();
+    }
 }
 
 // =====================================================================
@@ -1482,6 +1506,7 @@ const MmdApi* mmd_get_api(void) {
         api_camera_reset,
         api_camera_touch,
         api_camera_zoom,
+        api_render_tick,
     };
     static bool announced = false;
     if (!announced) {

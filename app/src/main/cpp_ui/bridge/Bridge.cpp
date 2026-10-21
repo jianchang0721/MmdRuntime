@@ -263,4 +263,8 @@ void CameraZoom(float delta) {
     if (Bind() && g_Api->camera_zoom) g_Api->camera_zoom(delta);
 }
 
+void RenderTick() {
+    if (Bind() && g_Api->render_tick) g_Api->render_tick();
+}
+
 }  // namespace Bridge

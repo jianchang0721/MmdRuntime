@@ -102,4 +102,7 @@ int  CameraEnabled();
 void CameraReset();
 void CameraZoom(float delta);   // 相对量，正数拉远
 
+// 让游戏侧在 UnityMain 线程跑一帧（UI 的 eglSwapBuffers 里每帧调）
+void RenderTick();
+
 }  // namespace Bridge
