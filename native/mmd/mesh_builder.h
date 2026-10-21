@@ -23,6 +23,11 @@ struct BuiltMesh {
 };
 
 // skel 必须已经 build 好（需要每根骨骼的绝对坐标来算 bindpose）
-bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out);
+//
+// templateMesh：从目标 SMR 拿到的 sharedMesh。非空时用它克隆出一个新 Mesh，
+// 而不是 object_new + Mesh..ctor() —— 后者在 Unity 2018 IL2CPP 下会崩
+// （cto r里要创建 native Mesh，实测静默退出且不留 tombstone）。
+bool build_mesh(const Model& model, const Skeleton& skel,
+                void* templateMesh, BuiltMesh& out);
 
 }  // namespace mmd

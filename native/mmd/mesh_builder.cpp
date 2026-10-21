@@ -125,7 +125,7 @@ bool init_mesh_classes(MeshClasses& mc) {
 
 }  // namespace
 
-bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
+bool build_mesh(const Model& model, const Skeleton& skel, void* templateMesh, BuiltMesh& out) {
     out = BuiltMesh{};
 
     const size_t nv = model.verts.size();
@@ -139,21 +139,40 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
     MeshClasses mc;
     if (!init_mesh_classes(mc)) return false;
 
-    // ---- 1) new Mesh ----
-    MLOG("[MESH] step0 object_new(Mesh)...");
-    void* mesh = uo::u_new_object(mc.meshCls);
-    MLOG("[MESH] step0 done mesh=%p", mesh);
-    if (!mesh) { MLOG("[MESH] object_new failed"); return false; }
-
-    if (!mc.mCtor) {
-        // Mesh 自己没有无参构造（被 strip）。不调 ctor 直接往下走，
-        // set_vertices 会因为 native 对象没建立而崩，所以提前报错。
-        MLOG("[MESH] FATAL: Mesh 无可用 .ctor，无法创建 Mesh 对象");
-        return false;
+    // ---- 1) 创建 Mesh ----
+    //
+    // 不调 Mesh..ctor()：Unity 2018 IL2CPP 下它要创建 native Mesh，
+    // build-57 实测直接让进程静默退出（无 tombstone），日志停在
+    // "step0b Mesh..ctor..." 之后再无下文。
+    //
+    // 改用 Object.Instantiate 克隆一个现成的 Mesh —— native 对象交给
+    // Unity 自己创建，稳得多（还自带正确的 native 类型）。
+    void* mesh = nullptr;
+    if (templateMesh) {
+        void* objCls = uo::u_class("UnityEngine", "Object");
+        void* mInst = objCls
+                    ? uo::u_method_typed(objCls, "Instantiate", 1, "Object")
+                    : nullptr;
+        MLOG("[MESH] step0 Instantiate(template=%p) fn=%p", templateMesh, mInst);
+        if (mInst) {
+            void* a[1] = { &templateMesh };
+            mesh = uo::u_call(nullptr, mInst, a);
+        }
+        MLOG("[MESH] step0 done cloned=%p", mesh);
     }
-    MLOG("[MESH] step0b Mesh..ctor...");
-    uo::u_call_void(mesh, mc.mCtor, nullptr);
-    MLOG("[MESH] step0b done");
+
+    if (!mesh) {
+        // 模板没有或克隆失败：回退到 object_new + ctor（可能会崩，但试一下）
+        MLOG("[MESH] 克隆失败，回退 object_new + Mesh..ctor");
+        mesh = uo::u_new_object(mc.meshCls);
+        if (mesh && mc.mCtor) {
+            MLOG("[MESH] step0b Mesh..ctor...");
+            uo::u_call_void(mesh, mc.mCtor, nullptr);
+            MLOG("[MESH] step0b done");
+        }
+    }
+
+    if (!mesh) { MLOG("[MESH] FATAL: 创建 Mesh 失败"); return false; }
 
     // ---- 1.5) 打印 set_vertices 的真实参数类型 ----
     // 崩在第一次灌顶点上，先确认签名是 Vector3[] 还是 Vector3[]&

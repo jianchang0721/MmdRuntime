@@ -71,7 +71,7 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
 
     // ---- ④ Mesh ----
     mmd::BuiltMesh bm;
-    if (!mmd::build_mesh(model, out.skeleton, bm)) {
+    if (!mmd::build_mesh(model, out.skeleton, smr.meshObj, bm)) {
         set_err(out, "mesh build failed");
         return false;
     }

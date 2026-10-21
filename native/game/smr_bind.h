@@ -17,6 +17,7 @@ namespace game {
 struct Smr {
     void*   managed = nullptr;   // Il2CppObject* (SkinnedMeshRenderer)
     void*   native  = nullptr;   // C++ SkinnedMeshRenderer*
+    void*   meshObj = nullptr;   // 当前 sharedMesh 的 Il2CppObject*（克隆模板）
     int32_t boneSlots = 0;       // 当前 m_Bones.size
     int32_t meshId = 0;          // 当前 m_Mesh 的 instanceID
 };

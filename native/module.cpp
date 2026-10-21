@@ -434,6 +434,7 @@ struct SmrInfo {
     int32_t       boneCount = 0;  // get_bones().Length
     int32_t       boneSizeRaw = 0;// 从 native +0x1e0 + 0x10 读出来的
     void*         boneData = nullptr;
+    void*         meshObj = nullptr;   // get_sharedMesh() 拿到的 Mesh 对象，克隆模板用
     bool          active = false;
 };
 
@@ -501,6 +502,7 @@ static bool scan_smrs() {
 
         Il2CppObject* mesh = invoke(g_mGetMesh, o, nullptr);
         if (mesh) {
+            si.meshObj = mesh;
             si.meshId = obj_instance_id(mesh);
             if (g_mGetVC) {
                 int32_t vc = invoke_int(g_mGetVC, mesh, nullptr, -1);
@@ -837,19 +839,20 @@ static std::string find_pmx_path() {
     return std::string();
 }
 
-// ---- 挑目标 SMR：优先玩家身体 ----
+// ---- 挑目标 SMR：只认身体，找不到就等 ----
+//
+// 之前找不到 11055_Body 时退而求其次拿「第一根骨骼>=40 的」，
+// 结果在登录界面把 Face / Ship_xxx 当成了目标（build-57 实测
+// 选中 #3 '15043_Face'）。拿 UI 模型的骨架套 MMD，既不对又白费。
+//
+// 现在只认名字里带 Body 且骨骼够多的，找不到就返回 -1，
+// 让上层回到 IDLE 继续等（进入主城后才会扫到真正的角色）。
 static int pick_target_smr() {
-    int idx = -1;
     for (size_t i = 0; i < g_smrs.size(); i++) {
-        if (g_smrs[i].name.find("11055_Body") != std::string::npos) { idx = (int)i; break; }
+        const SmrInfo& s = g_smrs[i];
+        if (s.name.find("Body") != std::string::npos && s.boneCount >= 40) return (int)i;
     }
-    if (idx < 0) {
-        for (size_t i = 0; i < g_smrs.size(); i++) {
-            if (g_smrs[i].boneCount >= 40) { idx = (int)i; break; }
-        }
-    }
-    if (idx < 0 && !g_smrs.empty()) idx = 0;
-    return idx;
+    return -1;
 }
 
 // ---- 真正加载 ----
@@ -898,6 +901,7 @@ static bool do_load_model() {
     smr.managed   = g_smrs[(size_t)idx].obj;
     smr.native    = g_smrs[(size_t)idx].native;
     smr.boneSlots = g_smrs[(size_t)idx].boneCount;
+    smr.meshObj   = g_smrs[(size_t)idx].meshObj;
 
     g_load = game::LoadResult{};
     if (!game::load_model_into_smr(g_model, pmx.c_str(), smr, nullptr, g_load)) {
