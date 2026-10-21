@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "unity/il2cpp_api.h"
 #include "unity/unity_objects.h"
 
 #define STAG "MmdSkeleton"
@@ -55,6 +56,12 @@ bool Skeleton::build(const Model& model, void* rootParent) {
         node.transform = uo::create_node(b.name.empty() ? "bone" : b.name.c_str(),
                                          nullptr, 0.0f, 0.0f, 0.0f);
         node.ok = (node.transform != nullptr);
+        // 钉住：骨骼树只被 C++ 静态数组引用，il2cpp GC 不认裸指针。
+        // build-75 实测：SUCCESS 之后进程直接没 —— GC 把 Transform 收了，
+        // SMR 的 m_Bones 里存着的 instanceID 变成野指针，渲染第一帧就崩。
+        if (node.ok && g_api.gchandle_new) {
+            node.gcHandle = g_api.gchandle_new((Il2CppObject*)node.transform, true);
+        }
         if (node.ok) built_++;
     }
 

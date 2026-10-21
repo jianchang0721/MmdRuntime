@@ -19,6 +19,7 @@ struct BoneNode {
     int     parentPmx = -1;
     void*   transform = nullptr;   // Il2CppObject* (UnityEngine.Transform)
     int32_t instanceId = 0;        // 写 m_Bones 用
+    uint32_t gcHandle = 0;         // gchandle_new(pinned)，防 GC 回收 Transform
     float   worldPos[3] = {0, 0, 0};
     bool    ok = false;
 };
