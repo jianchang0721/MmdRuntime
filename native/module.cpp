@@ -32,6 +32,7 @@
 #include <sys/syscall.h>
 #include <android/dlext.h>
 #include <android/log.h>
+#include <signal.h>
 #include <string>
 #include <vector>
 
@@ -1025,6 +1026,35 @@ static void refresh_status() {
 }
 
 // 真正的每帧逻辑。只能在 UnityMain 线程调。
+// =====================================================================
+// 把崩溃信号处理器压回系统默认。
+//
+// 背景（build-61/62 实测）：游戏自带 NPTH（字节那套 xCrash），它在主进程里
+// 先注册了 SIGSEGV/SIGABRT 的 handler。09:03 那次 set_vertices 崩溃只有
+// `E/NPTH: Native crash was detected!`，系统 /data/tombstones 里一个新文件都没有，
+// 栈拿不到，只能猜。
+//
+// 这里每 2 秒重设一次（防它事后再注册回去），下次崩就走系统 crash_dump64，
+// tombstone 能拿到完整调用链。上线前把这段删掉即可。
+// =====================================================================
+static void disarm_crash_handlers() {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    int ok = 0;
+    if (sigaction(SIGSEGV, &sa, nullptr) == 0) ok++;
+    if (sigaction(SIGABRT, &sa, nullptr) == 0) ok++;
+    if (sigaction(SIGBUS,  &sa, nullptr) == 0) ok++;
+    if (sigaction(SIGILL,  &sa, nullptr) == 0) ok++;
+
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        L("[CRASH] 信号处理器重置为 SIG_DFL ok=%d/4（崩溃走系统 tombstone）", ok);
+    }
+}
+
 static void tick_body() {
     if (g_inTick) return;
     g_inTick = 1;
@@ -1048,6 +1078,7 @@ static void tick_body() {
                 g_traced = tr;
                 L("[STEALTH] tracer=%d %s", (int)tr, tr ? "暂停模型操作" : "恢复正常");
             }
+            disarm_crash_handlers();
         }
     }
 

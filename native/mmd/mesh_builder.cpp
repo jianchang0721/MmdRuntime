@@ -210,6 +210,18 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
                     pd[k * 3 + 1] = 0.0f;
                     pd[k * 3 + 2] = 0.0f;
                 }
+                // 先把数组自身布局打出来：元素大小不对的话 set_vertices
+                // 会按自己的 stride 写，写越界直接信号崩（09:03 那次连 tombstone 都没）
+                {
+                    Il2CppClass* ec = (Il2CppClass*)mc.elemVec3;
+                    MLOG("[MESH] probe arr=%p klass=%p elemCls=%p(%s) len=%zu data=%p elemSz=%d",
+                         probe, *(void**)probe, (void*)ec,
+                         ec && g_api.class_get_name ? g_api.class_get_name(ec) : "?",
+                         (size_t)((Il2CppArray*)probe)->max_length,
+                         uo::u_array_data(probe),
+                         (ec && g_api.class_array_element_size)
+                             ? (int)g_api.class_array_element_size(ec) : -1);
+                }
                 MLOG("[MESH] probe: set_vertices x64...");
                 void* pa[1] = { &probe };
                 uo::u_call(mesh, mc.mSetVertices, pa);
