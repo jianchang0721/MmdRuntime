@@ -125,6 +125,24 @@ static void dump_visibility(SelfSmr& s, void* sourceSmr, void* modelRoot) {
     dump_renderer_state("ref ", sourceSmr);
 
     void* refNative = sourceSmr ? *(void**)((char*)sourceSmr + 16) : nullptr;
+
+    // skin probe：+0x1d8 是全表唯一像对象指针的 ref-only 槽，怀疑是 m_Skin。
+    // 只读，不写。
+    if (refNative) {
+        uint64_t* rslot = (uint64_t*)((char*)refNative + 0x1d8);
+        uint64_t  sslot = s.native ? *(uint64_t*)((char*)s.native + 0x1d8) : 0;
+        GLOG("[VIS] +0x1d8 self=0x%llx ref=0x%llx", (unsigned long long)sslot,
+             (unsigned long long)*rslot);
+        void* skin = (void*)(*rslot);
+        if (skin && ((uintptr_t)skin > 0x100000000ULL)) {
+            uint32_t* w = (uint32_t*)skin;
+            GLOG("[VIS] skin[0..7] = %08x %08x %08x %08x %08x %08x %08x %08x",
+                 w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+            GLOG("[VIS] skin[8..15] = %08x %08x %08x %08x %08x %08x %08x %08x",
+                 w[8], w[9], w[10], w[11], w[12], w[13], w[14], w[15]);
+        }
+    }
+
     if (s.native && refNative) {
         GLOG("[VIS] native self=%p ref=%p (只列 ref 有 self 为 0 的槽)",
              s.native, refNative);
