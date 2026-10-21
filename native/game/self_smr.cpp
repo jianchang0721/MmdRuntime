@@ -383,6 +383,37 @@ bool create_self_smr(void* modelTransform,
         if (mGetMesh) {
             void* m = uo::u_call(out.smr, mGetMesh, nullptr);
             GLOG("[SELF] get_sharedMesh 读回 = %p%s", m, m ? "" : "  (NULL! mesh 丢了)");
+            if (m) {
+                void* meshCls = uo::u_class("UnityEngine", "Mesh");
+                void* mGetVC = meshCls ? uo::u_method(meshCls, "get_vertexCount", 0) : nullptr;
+                void* mGetB  = meshCls ? uo::u_method(meshCls, "get_bounds", 0) : nullptr;
+                void* mGetV  = meshCls ? uo::u_method(meshCls, "get_vertices", 0) : nullptr;
+                if (mGetVC) {
+                    void* r = uo::u_call(m, mGetVC, nullptr);
+                    int vc = r ? *(int32_t*)((char*)r + 16) : -1;
+                    GLOG("[SELF] mesh.vertexCount = %d (expect 21804)%s", vc,
+                         vc == 21804 ? "" : "  <-- 顶点没写进去！");
+                }
+                if (mGetB) {
+                    void* r = uo::u_call(m, mGetB, nullptr);
+                    if (r) {
+                        float* b = (float*)((char*)r + 16);
+                        GLOG("[SELF] mesh.bounds c=(%.2f, %.2f, %.2f) e=(%.2f, %.2f, %.2f)",
+                             b[0], b[1], b[2], b[3], b[4], b[5]);
+                    }
+                }
+                if (mGetV) {
+                    void* arr = uo::u_call(m, mGetV, nullptr);
+                    if (arr) {
+                        int32_t n = *(int32_t*)((char*)arr + 24);
+                        float* v = (float*)((char*)arr + 32);
+                        GLOG("[SELF] vertices n=%d v0=(%.2f,%.2f,%.2f) v1=(%.2f,%.2f,%.2f)",
+                             n, v[0], v[1], v[2], v[3], v[4], v[5]);
+                    } else {
+                        GLOG("[SELF] get_vertices 返回 null");
+                    }
+                }
+            }
         } else {
             GLOG("[SELF] get_sharedMesh 方法缺失");
         }
