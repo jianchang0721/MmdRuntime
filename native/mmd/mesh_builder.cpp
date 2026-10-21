@@ -50,22 +50,39 @@ struct MeshClasses {
 };
 
 // 找「第一个参数是 int[]」的指定方法（避开 List<int> 重载）
+// 找 SetTriangles(int[], int) 这种重载。
+//
+// 之前按 class_get_name(p0) == "Int32[]" 判，build-72 实测一个都没命中
+// （25 个子网格全没设上）。所以改成看 Il2CppType 的 type 字段：
+//   Il2CppType 布局：data(8) + attrs(2, +8) + type(1, +10) + flags(1, +11)
+//   IL2CPP_TYPE_SZARRAY = 0x1D
+// 同时把所有重载打出来，换游戏/Unity 版本时一眼能看出参数类型。
 void* find_int_array_method(void* klass, const char* name, int nparams) {
     if (!klass) return nullptr;
     void* iter = nullptr;
     const MethodInfo* m = nullptr;
+    int seen = 0;
     while ((m = g_api.class_get_methods((Il2CppClass*)klass, &iter)) != nullptr) {
         const char* mn = g_api.method_get_name(m);
         if (!mn || strcmp(mn, name) != 0) continue;
-        if ((int)g_api.method_get_param_count(m) != nparams) continue;
-        const Il2CppType* t = g_api.method_get_param(m, 0);
-        if (!t) continue;
-        Il2CppClass* pc = g_api.class_from_type(t);
-        if (!pc) continue;
-        const char* cn = g_api.class_get_name(pc);
-        // int[] 的类名是 "Int32[]"（数组类型）
-        if (cn && (strcmp(cn, "Int32[]") == 0 || strcmp(cn, "Int32[]") == 0)) return (void*)m;
+
+        int pc = (int)g_api.method_get_param_count(m);
+        const Il2CppType* t0 = g_api.method_get_param(m, 0);
+        uint8_t ty = 0;
+        const char* c0 = "?";
+        if (t0) {
+            ty = ((const uint8_t*)t0)[10];
+            Il2CppClass* k = g_api.class_from_type(t0);
+            if (k) c0 = g_api.class_get_name(k);
+        }
+        MLOG("[MESH] %s overload #%d: params=%d p0type=0x%02x p0=%s",
+             name, ++seen, pc, (unsigned)ty, c0 ? c0 : "?");
+
+        if (pc != nparams) continue;
+        // SZARRAY + 元素是 Int32
+        if (ty == 0x1d && c0 && strstr(c0, "Int32")) return (void*)m;
     }
+    if (seen == 0) MLOG("[MESH] %s: 一个重载都没找到（方法被 strip？）", name);
     return nullptr;
 }
 
