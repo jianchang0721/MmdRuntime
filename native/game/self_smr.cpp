@@ -445,6 +445,43 @@ bool create_self_smr(void* modelTransform,
         (void)sn;
     }
 
+    // ===== SMR 方法表全扫（闸门：set_bones / set_sharedMesh 到底在不在）=====
+    {
+        static bool scanned = false;
+        if (!scanned) {
+            scanned = true;
+            const char* keys = "bones,sharedMesh,rootBone,bound,material,bake,skin,update,enabled,weight";
+            void* classes[2] = { uo::u_class("UnityEngine", "SkinnedMeshRenderer"),
+                                 uo::u_class("UnityEngine", "Renderer") };
+            const char* cnames[2] = { "SMR", "Renderer" };
+            for (int c = 0; c < 2; c++) {
+                if (!classes[c]) { GLOG("[SMRAPI] %s class missing", cnames[c]); continue; }
+                void* iter = nullptr;
+                const MethodInfo* m = nullptr;
+                int total = 0, matched = 0;
+                while ((m = g_api.class_get_methods((Il2CppClass*)classes[c], &iter)) != nullptr) {
+                    total++;
+                    const char* nm = g_api.method_get_name(m);
+                    if (!nm) continue;
+                    bool hit = false;
+                    for (const char* p2 = keys; *p2; ) {
+                        const char* comma = strchr(p2, ',');
+                        size_t len = comma ? (size_t)(comma - p2) : strlen(p2);
+                        if (len && strstr(nm, p2) && strstr(nm, p2) == nm) { hit = true; break; }
+                        if (len && strstr(nm, p2)) { hit = true; break; }
+                        if (!comma) break;
+                        p2 = comma + 1;
+                    }
+                    if (!hit) continue;
+                    matched++;
+                    GLOG("[SMRAPI] %s.%s argc=%u", cnames[c], nm,
+                         (unsigned)g_api.method_get_param_count(m));
+                }
+                GLOG("[SMRAPI] %s total=%d matched=%d", cnames[c], total, matched);
+            }
+        }
+    }
+
     // get_sharedMesh 读回验证（mesh 有没有被 GC 收掉）
     if (out.smr) {
         static void* mGetMesh = nullptr;
