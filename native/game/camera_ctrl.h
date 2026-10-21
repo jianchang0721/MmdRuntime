@@ -23,6 +23,13 @@ struct CameraCtrl {
     bool  enabled   = false;
     bool  scanned   = false;
 
+    // ---- 灵魂出窍模式（用户需求）----
+    // 本体不动，摄像机脱离角色，用游戏场景的摇杆推着飞。
+    // freeFly=false 时退回旧的「绕 target 公转」。
+    bool  freeFly   = true;      // 默认就是灵魂出窍
+    float flySpeed  = 6.0f;      // 米/秒（摇杆满推）
+    float camPos[3] = {0, 0, 0}; // freeFly 下的世界坐标（首次启用时取当前相机位置）
+
     // 球坐标（绕 target 公转）
     float dist  = 4.0f;
     float yaw   = 0.0f;

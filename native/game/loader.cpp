@@ -156,16 +156,23 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         LLOG("[LOADER] 材质创建失败，模型会是一个默认色块");
     }
 
-    // ---- ⑤ 收集骨骼 instanceID ----
+    // ---- ⑤ 收集骨骼 native Transform*（8 字节/元素）----
+    // native m_Bones 存的是 Transform*，不是 4 字节 instanceID。
+    // managed 对象 +16 就是 m_CachedPtr（native Transform*）。
+    std::vector<void*> bonePtrs((size_t)nb, nullptr);
+    // ids 只给 kUseSelfSmr=false 的旧换 mesh 路径用（当前不跑，保留以便回退）
     std::vector<int32_t> ids((size_t)nb, 0);
     int idOk = 0;
     for (int i = 0; i < nb; i++) {
         ids[(size_t)i] = out.skeleton.instance_at(i);
-        if (ids[(size_t)i] != 0) idOk++;
+        void* tr = out.skeleton.transform_at(i);
+        void* nat = tr ? *(void**)((char*)tr + 16) : nullptr;
+        bonePtrs[(size_t)i] = nat;
+        if (nat) idOk++;
     }
-    LLOG("[LOADER] instanceIDs %d/%d valid", idOk, nb);
+    LLOG("[LOADER] native bone ptrs %d/%d valid", idOk, nb);
     if (idOk < nb / 2) {
-        set_err(out, "too many invalid bone instanceIDs");
+        set_err(out, "too many invalid bone native pointers");
         return false;
     }
 
@@ -188,7 +195,7 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         LLOG("[LOADER] materials to SMR: %d (raw %zu, null filtered)",
              matsN, mats.items.size());
         if (!game::create_self_smr(modelRoot, smr.managed, bm.mesh,
-                                   ids.data(), (int)nb,
+                                   bonePtrs.data(), (int)nb,
                                    matsPtr, matsN, self)) {
             set_err(out, "create_self_smr failed");
             return false;

@@ -35,6 +35,9 @@ void* g_setRot = nullptr;
 void* g_setFov = nullptr;
 void* g_getDepth = nullptr;
 void* g_getEnabled = nullptr;
+void* g_getPos = nullptr;      // Transform.get_position
+void* g_getAxisRaw = nullptr;  // UnityEngine.Input.GetAxisRaw(string)，静态
+void* g_inputClass = nullptr;
 
 bool g_refsReady = false;
 
@@ -59,13 +62,23 @@ bool bind_refs() {
         g_setPos = uo::u_method_typed(trClass, "set_position", 1, "Vector3");
         g_setRot = uo::u_method_typed(trClass, "set_rotation", 1, "Quaternion");
     }
+    if (trClass) g_getPos = uo::u_method_typed(trClass, "get_position", 0, nullptr);
+    if (!g_getPos && trClass) g_getPos = uo::u_method(trClass, "get_position", 0);
+
+    // 摇杆：Unity 的 Input Manager 轴。游戏的虚拟摇杆通常映射到这两个轴。
+    g_inputClass = uo::u_class("UnityEngine", "Input");
+    if (g_inputClass) {
+        g_getAxisRaw = uo::u_method_typed(g_inputClass, "GetAxisRaw", 1, "String");
+        if (!g_getAxisRaw) g_getAxisRaw = uo::u_method(g_inputClass, "GetAxisRaw", 1);
+    }
+
     g_setFov    = uo::u_method(g_camClass, "set_fieldOfView", 1);
     g_getDepth  = uo::u_method(g_camClass, "get_depth", 0);
     g_getEnabled = uo::u_method(g_camClass, "get_enabled", 0);
 
-    CLOG("[CAM] find=%p getTr=%p setPos=%p setRot=%p setFov=%p depth=%p",
-         (void*)g_findAll, (void*)g_getTr, (void*)g_setPos,
-         (void*)g_setRot, (void*)g_setFov, (void*)g_getDepth);
+    CLOG("[CAM] find=%p getTr=%p setPos=%p setRot=%p getPos=%p axis=%p input=%p",
+         (void*)g_findAll, (void*)g_getTr, (void*)g_setPos, (void*)g_setRot,
+         (void*)g_getPos, (void*)g_getAxisRaw, (void*)g_inputClass);
 
     if (!g_findAll || !g_getTr || !g_setPos || !g_setRot) {
         CLOG("[CAM] 关键方法缺失，自由视角不可用");
@@ -159,10 +172,75 @@ int CameraCtrl::scan() {
 }
 
 // =====================================================================
+// 灵魂出窍：读摇杆 + 读当前相机位置
+// =====================================================================
+static float read_axis(const char* name) {
+    if (!g_getAxisRaw || !g_api.string_new || !name) return 0.0f;
+    Il2CppString* s = g_api.string_new(name);
+    if (!s) return 0.0f;
+    void* a[1] = { s };
+    void* r = uo::u_call(nullptr, g_getAxisRaw, a);
+    return r ? *(float*)((char*)r + 16) : 0.0f;
+}
+
+// =====================================================================
 // 每帧更新
 // =====================================================================
 void CameraCtrl::update() {
     if (!enabled || !transform || !g_refsReady) return;
+
+    // ---- 灵魂出窍：本体不动，摇杆推着相机飞 ----
+    if (freeFly) {
+        // 首次启用：把 camPos 对齐到相机当前世界坐标，避免瞬移
+        if (camPos[0] == 0.0f && camPos[1] == 0.0f && camPos[2] == 0.0f && g_getPos) {
+            void* r = uo::u_call(transform, g_getPos, nullptr);
+            if (r) {
+                float* p = (float*)((char*)r + 16);
+                camPos[0] = p[0]; camPos[1] = p[1]; camPos[2] = p[2];
+                CLOG("[CAM] freeFly start pos=(%.2f, %.2f, %.2f)",
+                     camPos[0], camPos[1], camPos[2]);
+            }
+        }
+
+        const float h = read_axis("Horizontal");
+        const float v = read_axis("Vertical");
+        const float dt = 1.0f / 60.0f;
+        const float syw = sinf(yaw), cyw = cosf(yaw);
+
+        // 沿相机水平朝向平移：v=前后，h=左右
+        camPos[0] += (v * syw + h * cyw) * flySpeed * dt;
+        camPos[2] += (v * cyw - h * syw) * flySpeed * dt;
+
+        struct { float x, y, z; } pos = { camPos[0], camPos[1], camPos[2] };
+        void* a1[1] = { &pos };
+        uo::u_call_void(transform, g_setPos, a1);
+
+        // 朝向：yaw/pitch（右半屏拖动改这两个值）
+        const float halfP = pitch * 0.5f;
+        const float halfY = yaw * 0.5f;
+        float q[4] = {
+            sinf(halfP) * cosf(halfY),
+            sinf(halfP) * sinf(halfY),
+            cosf(halfP) * sinf(halfY),
+            cosf(halfP) * cosf(halfY)
+        };
+        void* a2[1] = { q };
+        uo::u_call_void(transform, g_setRot, a2);
+
+        if (g_setFov) {
+            float fov = 55.0f;
+            void* a3[1] = { &fov };
+            uo::u_call_void(camera, g_setFov, a3);
+        }
+
+        // 每 60 帧打一次摇杆值，确认游戏摇杆真的映射到这两个轴
+        static int flyBeat = 0;
+        if (++flyBeat % 60 == 1) {
+            CLOG("[CAM] fly h=%.2f v=%.2f pos=(%.1f, %.1f, %.1f)",
+                 h, v, camPos[0], camPos[1], camPos[2]);
+        }
+        return;
+    }
 
     // 目标点：先读当前摄像机对着的位置（首次），之后可跟随角色
     float cx = 0.0f, cy = 0.0f, cz = 0.0f;
@@ -257,15 +335,19 @@ bool camera_touch(int action, int pointerId, float x, float y,
     switch (action) {
         case 0: {  // DOWN
             if (s.active) return false;
+            s.side = (x < halfW) ? 0 : 1;
+            // 灵魂出窍模式：左半屏是游戏摇杆的地盘，一根手指都不吃。
+            // （用户需求：本体不动，用游戏场景的摇杆推摄像机）
+            if (g_camera.freeFly && s.side == 0) return false;
             s.active = true;
             s.startX = s.lastX = x;
             s.startY = s.lastY = y;
-            s.side = (x < halfW) ? 0 : 1;
             return true;
         }
 
         case 2: {  // MOVE
             if (!s.active) return false;
+            if (g_camera.freeFly && s.side == 0) return false;
             const float dx = x - s.lastX;
             const float dy = y - s.lastY;
             s.lastX = x;

@@ -50,13 +50,13 @@ void* obj_native(void* o) {
 bool create_self_smr(void* modelTransform,
                      void* sourceSmr,
                      void* meshObj,
-                     const int32_t* boneIds, int boneCount,
+                     void** bonePtrs, int boneCount,
                      void** materials, int matCount,
                      SelfSmr& out) {
     out = SelfSmr{};
-    if (!modelTransform || !meshObj || !boneIds || boneCount <= 0) {
-        GLOG("[SELF] bad args tr=%p mesh=%p ids=%p n=%d",
-             modelTransform, meshObj, (void*)boneIds, boneCount);
+    if (!modelTransform || !meshObj || !bonePtrs || boneCount <= 0) {
+        GLOG("[SELF] bad args tr=%p mesh=%p ptrs=%p n=%d",
+             modelTransform, meshObj, (void*)bonePtrs, boneCount);
         return false;
     }
 
@@ -116,13 +116,32 @@ bool create_self_smr(void* modelTransform,
     if (!out.native) { GLOG("[SELF] SMR native is null"); return false; }
     GLOG("[SELF] SMR=%p native=%p", comp, out.native);
 
-    // ---- 3) 写 native m_Bones（新对象 size=0，随便给）----
+    // ---- 3) 写 native m_Bones（8 字节/元素的 Transform* 指针数组）----
     uint8_t* base = (uint8_t*)out.native;
     const auto& L = layout();
 
-    int32_t* newIds = (int32_t*)malloc((size_t)boneCount * sizeof(int32_t));
-    if (!newIds) { GLOG("[SELF] malloc bone ids failed"); return false; }
-    memcpy(newIds, boneIds, (size_t)boneCount * sizeof(int32_t));
+    // 对照：游戏原 SMR 的 m_Bones.data 前 8 个 4 字节。
+    // 小整数 -> 4 字节 instanceID 数组；0x7xxxxxxxxx 堆指针 -> 8 字节指针数组。
+    if (sourceSmr) {
+        uint8_t* sb = (uint8_t*)obj_native(sourceSmr);
+        if (sb) {
+            void* sd = *(void**)(sb + L.offBoneData);
+            int32_t ss = *(int32_t*)(sb + L.offBoneSize);
+            GLOG("[SELF] ref bones data=%p size=%d", sd, ss);
+            if (sd && ss >= 2) {
+                uint32_t* w = (uint32_t*)sd;
+                GLOG("[SELF]   [%08x %08x %08x %08x] [%08x %08x %08x %08x]",
+                     w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+            }
+        }
+    }
+
+    // build-102 实测：之前按 4 字节 instanceID 写，Unity 读第 0 根骨骼时把
+    // id0 | (id1 << 32) 拼成 0x0006800600000001 当指针解引用 -> SIGSEGV。
+    // native m_Bones 元素宽度是 8 字节，存的是 Transform*（managed 对象 +16）。
+    void** newBones = (void**)malloc((size_t)boneCount * sizeof(void*));
+    if (!newBones) { GLOG("[SELF] malloc bone ptrs failed"); return false; }
+    memcpy(newBones, bonePtrs, (size_t)boneCount * sizeof(void*));
 
     int32_t oldSize = *(int32_t*)(base + L.offBoneSize);
     void*   oldData = *(void**)(base + L.offBoneData);
@@ -131,7 +150,7 @@ bool create_self_smr(void* modelTransform,
 
     // 登记给析构 hook（只在 hook 真装上时才有意义；Dobby 走不通时是空操作）
     if (bonehook::installed()) {
-        bonehook::set_ours(newIds, oldData, oldSize, oldCap);
+        bonehook::set_ours(newBones, oldData, oldSize, oldCap);
     }
 
     // capacity 最低位设 1：Unity 的容器析构读 [容器+0x18] 的 byte0，
@@ -139,7 +158,7 @@ bool create_self_smr(void* modelTransform,
     // 这块内存（否则 heap corruption 必崩）。
     const int64_t capOdd = (int64_t)((int64_t)boneCount | 1);
 
-    *(void**)(base + L.offBoneData) = newIds;
+    *(void**)(base + L.offBoneData) = newBones;
     *(int32_t*)(base + L.offBoneSize) = boneCount;
     *(int64_t*)(base + L.offBoneCap) = capOdd;
     out.bones = boneCount;
