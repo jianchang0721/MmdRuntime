@@ -298,6 +298,28 @@ bool create_self_smr(void* modelTransform,
         }
     }
 
+    // ---- 6) 补 m_LocalBounds.extents ----
+    // build-105 实测：自建 SMR 的 bounds extents 全 0 -> isVisible=0 -> 被视锥剔除，
+    // 这就是「日志全 SUCCESS、屏幕全空白」的直接原因。
+    // native 对比把字段钉死在 +0xcc/+0xd0/+0xd4（ref 的三个 float 与
+    // managed get_bounds() 的 extents 完全一致）；center 在 +0xc0..+0xc8。
+    {
+        uint8_t* rn = sourceSmr ? (uint8_t*)obj_native(sourceSmr) : nullptr;
+        if (rn) {
+            float* re = (float*)(rn + 0xcc);
+            float* se = (float*)((uint8_t*)out.native + 0xcc);
+            se[0] = re[0]; se[1] = re[1]; se[2] = re[2];
+            if (se[0] <= 0.0f || se[1] <= 0.0f || se[2] <= 0.0f) {
+                se[0] = 0.9f; se[1] = 1.0f; se[2] = 0.9f;
+            }
+            GLOG("[SELF] m_LocalBounds.extents <- (%.3f, %.3f, %.3f)", se[0], se[1], se[2]);
+        } else {
+            float* se = (float*)((uint8_t*)out.native + 0xcc);
+            se[0] = 0.9f; se[1] = 1.0f; se[2] = 0.9f;
+            GLOG("[SELF] m_LocalBounds.extents <- 默认 (0.9, 1.0, 0.9)（没有 ref 可抄）");
+        }
+    }
+
     dump_visibility(out, sourceSmr, modelTransform);
     GLOG("[SELF] done: meshId=%d bones=%d mats=%d", meshId, boneCount, matCount);
     return true;
