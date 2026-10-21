@@ -25,6 +25,8 @@ add_library(mmdruntime SHARED
     stealth.cpp
     unity/unity_objects.cpp
     game/smr_bind.cpp
+    game/smr_layout.cpp
+    game/bone_names.cpp
     game/loader.cpp
     game/camera_ctrl.cpp
 )

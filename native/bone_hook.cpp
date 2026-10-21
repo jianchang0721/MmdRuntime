@@ -31,6 +31,7 @@
 #include <stdio.h>
 
 #include "dobby/dobby.h"
+#include "game/smr_layout.h"
 
 #define HTAG "MmdBoneHook"
 #define HLOG(...) logsink::Write(__VA_ARGS__)
@@ -63,19 +64,21 @@ static int32_t g_origSize = 0;
 static int64_t g_origCap  = 0;
 static int     g_hitCount = 0;
 
-// m_Bones 结构内偏移（实测）
-static const int OFF_DATA = 0x00;
-static const int OFF_SIZE = 0x10;
-static const int OFF_CAP  = 0x18;
+// m_Bones 容器内部偏移。
+// 不再写死 0x00/0x10/0x18：由 SMR 侧偏移换算出来（容器起始 = m_Bones 处），
+// 游戏或 Unity 升级后 smr_layout 探测到新值，这里自动跟着走。
+static int off_data() { return 0; }
+static int off_size() { return game::layout().offBoneSize - game::layout().offBoneData; }
+static int off_cap()  { return game::layout().offBoneCap  - game::layout().offBoneData; }
 
 void hook_body(void* self) {
     if (self) {
-        void* cur = *(void**)((char*)self + OFF_DATA);
+        void* cur = *(void**)((char*)self + off_data());
         if (g_ourData && cur == g_ourData) {
             // 把 Unity 原来的三字段还回去，让它按原样释放自己的那块内存
-            *(void**)((char*)self + OFF_DATA) = g_origData;
-            *(int32_t*)((char*)self + OFF_SIZE) = g_origSize;
-            *(int64_t*)((char*)self + OFF_CAP)  = g_origCap;
+            *(void**)((char*)self + off_data())  = g_origData;
+            *(int32_t*)((char*)self + off_size()) = g_origSize;
+            *(int64_t*)((char*)self + off_cap())  = g_origCap;
             g_hitCount++;
             HLOG("[BONEHOOK] dtor intercepted #%d, restored origData=%p size=%d cap=%lld",
                  g_hitCount, g_origData, g_origSize, (long long)g_origCap);

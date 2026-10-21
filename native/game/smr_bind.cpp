@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "bone_hook.h"
+#include "smr_layout.h"
 #include "unity/il2cpp_api.h"
 #include "unity/unity_objects.h"
 
@@ -19,11 +20,13 @@ namespace game {
 
 namespace {
 
-// native SkinnedMeshRenderer 字段偏移（libunity.so 反汇编实测，2018.4.13f1）
-const int OFF_MESH    = 0x1d4;   // PPtr<Mesh>，4 字节 instanceID
-const int OFF_BONE_D  = 0x1e0;   // dynamic_array.data
-const int OFF_BONE_SZ = 0x1f0;   // dynamic_array.size   (int32)
-const int OFF_BONE_CAP= 0x1f8;   // dynamic_array.capacity (int64)
+// 字段偏移不再写死：默认值是 Unity 2018.4.13f1 的实测值，
+// 运行时由 smr_layout 的样本探测/校验覆盖（游戏或 Unity 升级后自动重扫）。
+// 所有读写统一从这里取，别在别处再写 0x1d4。
+#define OFF_MESH      (layout().offMesh)
+#define OFF_BONE_D    (layout().offBoneData)
+#define OFF_BONE_SZ   (layout().offBoneSize)
+#define OFF_BONE_CAP  (layout().offBoneCap)
 
 }  // namespace
 

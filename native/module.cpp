@@ -36,6 +36,8 @@
 #include <vector>
 
 #include "game/camera_ctrl.h"
+#include "game/smr_layout.h"
+#include "game/bone_names.h"
 #include "mmd/pmx.h"
 #include "bone_hook.h"
 #include "logsink.h"
@@ -239,6 +241,9 @@ static bool bind_api() {
     B(method_get_param_count,   "il2cpp_method_get_param_count");
     B(runtime_invoke,           "il2cpp_runtime_invoke");
     B(string_new,               "il2cpp_string_new");
+    // 显式长度版本：内部不做 strlen，名字异常也不会报名天文数字。
+    // build-59 的 malloc(2^64-9330080) 就是 string_new 的 strlen 坑。
+    B(string_new_len,           "il2cpp_string_new_len");
     B(object_get_class,         "il2cpp_object_get_class");
     B(type_get_object,          "il2cpp_type_get_object");
 
@@ -510,12 +515,29 @@ static bool scan_smrs() {
             }
         }
         if (si.native) {
-            si.meshIdRaw   = *(int32_t*)((char*)si.native + 0x1d4);
-            si.boneData    = *(void**)((char*)si.native + 0x1e0);
-            si.boneSizeRaw = *(int32_t*)((char*)si.native + 0x1f0);
+            // 偏移全部从 layout() 取：默认值之外，运行时探测会覆盖
+            si.meshIdRaw   = *(int32_t*)((char*)si.native + game::layout().offMesh);
+            si.boneData    = *(void**)((char*)si.native + game::layout().offBoneData);
+            si.boneSizeRaw = *(int32_t*)((char*)si.native + game::layout().offBoneSize);
         }
         g_smrs.push_back(si);
     }
+    // 用本批样本校准 SMR 字段偏移：
+    // 默认值是 Unity 2018.4.13f1 实测的，游戏或 Unity 升级后靠这里重扫
+    {
+        std::vector<game::SmrSample> samples;
+        samples.reserve(g_smrs.size());
+        for (const SmrInfo& s : g_smrs) {
+            if (!s.native || s.meshId == 0 || s.boneCount <= 0) continue;
+            game::SmrSample x;
+            x.native    = s.native;
+            x.meshId    = s.meshId;
+            x.boneCount = s.boneCount;
+            samples.push_back(x);
+        }
+        game::detect_layout(samples);
+    }
+
     return !g_smrs.empty();
 }
 
@@ -529,13 +551,35 @@ static void dump_smrs() {
             offTotal++;
             if (s.meshIdRaw == s.meshId) offMatch++;
         }
-        L("[UNITY] #%zu name='%s' native=%p bones=%d(sizeRaw=%d) data=%p meshID=%d(raw@0x1d4=%d) %s",
+        L("[UNITY] #%zu name='%s' native=%p bones=%d(sizeRaw=%d) data=%p meshID=%d(raw@meshOff=%d) %s",
           i, s.name.c_str(), s.native, s.boneCount, s.boneSizeRaw, s.boneData,
           s.meshId, s.meshIdRaw,
           !canMatch ? "?" : (s.meshIdRaw == s.meshId ? "OFFSET-OK" : "OFFSET-MISMATCH"));
     }
     L("[UNITY] offset check: %d / %d match (%s)", offMatch, offTotal,
       offTotal && offMatch == offTotal ? "PASS" : "FAIL");
+
+    // ---- 骨骼名：Delta 重定向要按名字对齐，先把名字全拿下来 ----
+    // 顺带装 Object.get_name 的 hook，抓「谁在读名字」的调用点，
+    // 用来反查游戏内部的骨骼查找函数（LR 偏移可直接固化成基址定位）。
+    {
+        int idx = -1;
+        for (size_t i = 0; i < g_smrs.size(); i++) {
+            if (g_smrs[i].obj && g_smrs[i].boneCount >= 40) { idx = (int)i; break; }
+        }
+        if (idx >= 0) {
+            std::vector<game::BoneNameEntry> names;
+            if (game::collect_bone_names(g_smrs[idx].obj, names)) {
+                L("[BONENAME] SMR #%d '%s' bones=%zu", idx,
+                  g_smrs[idx].name.c_str(), names.size());
+                game::dump_bone_names(names, 48);
+            }
+            if (!game::name_hook_installed()) {
+                game::install_name_hook(200);
+            }
+        }
+    }
+
     L("========== [UNITY] SMR DUMP END ==========");
 }
 
@@ -563,7 +607,7 @@ static void run_swap_experiment() {
     L("[UNITY] A=#%d '%s' meshID=%d  B=#%d '%s' meshID=%d",
       a, A.name.c_str(), A.meshIdRaw, b, B.name.c_str(), B.meshIdRaw);
 
-    int32_t* pA = (int32_t*)((char*)A.native + 0x1d4);
+    int32_t* pA = (int32_t*)((char*)A.native + game::layout().offMesh);
     int32_t  oldA = *pA;
     *pA = B.meshIdRaw;      // ← 唯一的写入动作
 
@@ -608,9 +652,9 @@ static void probe_bones_layout() {
     L("========== [BONE] LAYOUT DUMP ==========");
     L("[BONE] target='%s' native=%p getbones=%d", s.name.c_str(), s.native, s.boneCount);
 
-    void*  dataPtr = *(void**)(base + 0x1e0);
-    int32_t sizeVal = *(int32_t*)(base + 0x1f0);
-    L("[BONE] data=%p  size@0x1f0=%d", dataPtr, sizeVal);
+    void*  dataPtr = *(void**)(base + game::layout().offBoneData);
+    int32_t sizeVal = *(int32_t*)(base + game::layout().offBoneSize);
+    L("[BONE] data=%p  size@0x%x=%d", dataPtr, (unsigned)game::layout().offBoneSize, sizeVal);
 
     // 把 0x1d0 ~ 0x220 全部打出来，人工对着找 capacity
     for (int off = 0x1d0; off <= 0x220; off += 16) {
@@ -629,16 +673,18 @@ static void probe_bones_layout() {
 
     // 猜 capacity：size 后面 4/8 字节上的小整数
     int32_t c1 = *(int32_t*)(base + 0x1f4);
-    int32_t c2 = *(int32_t*)(base + 0x1f8);
+    int32_t c2 = *(int32_t*)(base + game::layout().offBoneCap);
     int32_t c3 = *(int32_t*)(base + 0x1e8);
     // +0x1f8 是 int64 capacity（实测 144 = 2×72，标准 vector 扩容策略）
-    int64_t cap64 = *(int64_t*)(base + 0x1f8);
-    L("[BONE] size@0x1f0=%d  capacity@0x1f8=%lld", sizeVal, (long long)cap64);
+    int64_t cap64 = *(int64_t*)(base + game::layout().offBoneCap);
+    L("[BONE] size@0x%x=%d  capacity@0x%x=%lld",
+      (unsigned)game::layout().offBoneSize, sizeVal,
+      (unsigned)game::layout().offBoneCap, (long long)cap64);
     L("[BONE] verdict: need 224, have cap %lld -> %s",
       (long long)cap64, cap64 >= 224 ? "ENOUGH" : "NEED-REALLOC");
 
     // ---- 零风险写测试：把 size 顶到 capacity（不越界），读回，还原 ----
-    int32_t* sizePtr = (int32_t*)(base + 0x1f0);
+    int32_t* sizePtr = (int32_t*)(base + game::layout().offBoneSize);
     int32_t orig = *sizePtr;
     int32_t target = (cap64 > orig && cap64 < 4096) ? (int32_t)cap64 : orig;
 
@@ -667,8 +713,8 @@ static void probe_bones_layout() {
     // hook 已经把容器析构接管了：析构前会把这几个字段还原成 Unity 原值，
     // 所以 data 换成我们 malloc 的指针是安全的，Unity 会 free 它自己那块。
     const int32_t TARGET = 224;
-    int32_t* oldData = (int32_t*)*(void**)(base + 0x1e0);
-    int64_t  oldCap  = *(int64_t*)(base + 0x1f8);
+    int32_t* oldData = (int32_t*)*(void**)(base + game::layout().offBoneData);
+    int64_t  oldCap  = *(int64_t*)(base + game::layout().offBoneCap);
     int32_t  oldSize = orig;
 
     if (oldData && oldSize > 0 && oldSize < TARGET) {
@@ -681,9 +727,9 @@ static void probe_bones_layout() {
 
             bonehook::set_ours(newData, oldData, oldSize, oldCap);
 
-            *(void**)(base + 0x1e0) = newData;
-            *(int32_t*)(base + 0x1f0) = TARGET;
-            *(int64_t*)(base + 0x1f8) = TARGET;   // 正常偶数，析构交给 hook 还原
+            *(void**)(base + game::layout().offBoneData) = newData;
+            *(int32_t*)(base + game::layout().offBoneSize) = TARGET;
+            *(int64_t*)(base + game::layout().offBoneCap) = TARGET;   // 正常偶数，析构交给 hook 还原
 
             Il2CppObject* eb = invoke(g_mGetBones, s.obj, nullptr);
             int32_t eN = eb ? (int32_t)((Il2CppArray*)eb)->max_length : -1;
@@ -693,9 +739,9 @@ static void probe_bones_layout() {
 
             if (eN != TARGET) {
                 // 读回不对就立刻回滚，别留半吊子状态
-                *(void**)(base + 0x1e0) = oldData;
-                *(int32_t*)(base + 0x1f0) = oldSize;
-                *(int64_t*)(base + 0x1f8) = oldCap;
+                *(void**)(base + game::layout().offBoneData) = oldData;
+                *(int32_t*)(base + game::layout().offBoneSize) = oldSize;
+                *(int64_t*)(base + game::layout().offBoneCap) = oldCap;
                 bonehook::set_ours(nullptr, nullptr, 0, 0);
                 free(newData);
                 LERR("[BONE] rolled back");

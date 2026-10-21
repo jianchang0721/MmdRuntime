@@ -296,7 +296,15 @@ void* create_node(const char* name, void* parentTransform, float lx, float ly, f
         ctorOk = invoke_void(g_mGoCtorEmpty, go, nullptr);
     }
     if (!ctorOk && g_mGoCtorString) {
-        Il2CppString* s = g_api.string_new ? g_api.string_new(name) : nullptr;
+        // 用 string_new_len 而不是 string_new：
+        // string_new 内部 strlen，名字一旦异常就会把天文数字传给分配器
+        // （build-59 实测 malloc(2^64-9330080)）。我们手上本来就有 nlen。
+        Il2CppString* s = nullptr;
+        if (g_api.string_new_len) {
+            s = g_api.string_new_len(name, (int32_t)nlen);
+        } else if (g_api.string_new) {
+            s = g_api.string_new(name);
+        }
         if (s) {
             void* args[1] = { &s };
             ctorOk = invoke_void(g_mGoCtorString, go, args);

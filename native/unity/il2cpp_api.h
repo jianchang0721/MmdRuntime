@@ -51,6 +51,8 @@ typedef const Il2CppType*     (*fn_method_get_param)(const MethodInfo*, uint32_t
 typedef Il2CppClass*          (*fn_class_from_type)(const Il2CppType*);
 typedef Il2CppObject*         (*fn_runtime_invoke)(const MethodInfo*, void*, void**, Il2CppException**);
 typedef Il2CppString*         (*fn_string_new)(const char*);
+// 显式长度版本：内部不走 strlen，名字串异常也不会把天文数字喂给分配器
+typedef Il2CppString*         (*fn_string_new_len)(const char*, int32_t);
 typedef Il2CppObject*         (*fn_object_new)(Il2CppClass*);
 typedef Il2CppClass*          (*fn_object_get_class)(Il2CppObject*);
 typedef Il2CppArray*          (*fn_array_new)(Il2CppClass*, size_t);
@@ -83,6 +85,7 @@ struct Il2CppApi {
     fn_class_from_type           class_from_type;
     fn_runtime_invoke            runtime_invoke;
     fn_string_new                string_new;
+    fn_string_new_len            string_new_len;
     fn_object_new                object_new;
     fn_object_get_class          object_get_class;
     fn_array_new                 array_new;
