@@ -24,10 +24,13 @@ struct SelfSmr {
     int     bones  = 0;
 };
 
-// modelTransform：已经建好的模型根节点（挂在游戏角色下、带缩放的拿一个）。
+// modelTransform：已经建好的模型根节点（挂在游戏角色下、带缩放的那一个）。
 //                 SMR 组件加到它所在的 GameObject 上，不再自己建节点。
+// sourceSmr：目标角色的 SMR（Il2CppObject*）。只用来拿 layer ——
+//            不拷 layer 的话，游戏相机 cullingMask 里没有 Default 层，模型画了也看不见。
 // boneIds：每个骨骼 Transform 的 instanceID 数组
 bool create_self_smr(void* modelTransform,
+                     void* sourceSmr,
                      void* meshObj,
                      const int32_t* boneIds, int boneCount,
                      void** materials, int matCount,

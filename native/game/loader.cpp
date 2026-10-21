@@ -175,7 +175,7 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         game::SelfSmr self;
         void** matsPtr = mats.items.empty() ? nullptr : mats.items.data();
         int    matsN   = (int)mats.items.size();
-        if (!game::create_self_smr(modelRoot, bm.mesh,
+        if (!game::create_self_smr(modelRoot, smr.managed, bm.mesh,
                                    ids.data(), (int)nb,
                                    matsPtr, matsN, self)) {
             set_err(out, "create_self_smr failed");

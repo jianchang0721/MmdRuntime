@@ -48,6 +48,7 @@ void* obj_native(void* o) {
 }  // namespace
 
 bool create_self_smr(void* modelTransform,
+                     void* sourceSmr,
                      void* meshObj,
                      const int32_t* boneIds, int boneCount,
                      void** materials, int matCount,
@@ -72,6 +73,30 @@ bool create_self_smr(void* modelTransform,
     if (!go) { GLOG("[SELF] get_gameObject failed"); return false; }
     out.go = go;
     GLOG("[SELF] GameObject=%p Transform=%p", go, tr);
+
+    // ---- 拷贝 layer（看不见模型的头号真因）----
+    // ~/ModelMod_repo 里踩过：不设 layer 的话相机 cullingMask 里没 Default 层，
+    // 模型画了但不渲染。直接抬用目标角色的 layer 最稳。
+    {
+        Il2CppClass* compCls = (Il2CppClass*)uo::u_class("UnityEngine", "Component");
+        Il2CppClass* goClsL  = (Il2CppClass*)uo::u_class("UnityEngine", "GameObject");
+        int layer = 0;
+        if (sourceSmr && compCls && goClsL) {
+            const MethodInfo* mGetGO = (const MethodInfo*)uo::u_method(compCls, "get_gameObject", 0);
+            void* sgo = mGetGO ? uo::u_call(sourceSmr, (void*)mGetGO, nullptr) : nullptr;
+            const MethodInfo* mGetLayer = (const MethodInfo*)uo::u_method(goClsL, "get_layer", 0);
+            if (sgo && mGetLayer) {
+                void* lr = uo::u_call(sgo, (void*)mGetLayer, nullptr);
+                if (lr) layer = *(int32_t*)((char*)lr + 16);
+            }
+        }
+        const MethodInfo* mSetLayer = (const MethodInfo*)uo::u_method(goClsL, "set_layer", 1);
+        if (mSetLayer) {
+            void* a[1] = { &layer };
+            uo::u_call_void(go, (void*)mSetLayer, a);
+        }
+        GLOG("[SELF] layer copied: %d (setLayer=%p)", layer, (void*)mSetLayer);
+    }
 
     // ---- 2) AddComponent(SkinnedMeshRenderer 的 Type) ----
     Il2CppClass* goCls = (Il2CppClass*)uo::u_class("UnityEngine", "GameObject");
