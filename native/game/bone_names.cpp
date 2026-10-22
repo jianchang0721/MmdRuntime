@@ -134,6 +134,16 @@ bool collect_bone_names(void* smrManaged, std::vector<BoneNameEntry>& out) {
     out.clear();
     if (!smrManaged) return false;
 
+    // 坑（build-140 实测）：这里用的 instance_id / object_name 都依赖 uo::init()，
+    // 而扫 SMR 发生在加载模型之前，uo 还没 init -> 方法指针全 null，
+    // 结果 73 根骨骼全是 id=0 name=''。init() 是幂等的，先确保它跑过。
+    if (!uo::ready()) {
+        if (!uo::init()) {
+            BLOG("[BONENAME] uo::init() 失败，名字拿不到");
+            return false;
+        }
+    }
+
     if (!g_mGetBones) {
         void* k = uo::u_class("UnityEngine", "SkinnedMeshRenderer");
         g_mGetBones = (const MethodInfo*)uo::u_method(k, "get_bones", 0);

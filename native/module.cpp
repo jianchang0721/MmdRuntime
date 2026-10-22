@@ -584,7 +584,7 @@ static void dump_smrs() {
             if (game::collect_bone_names(g_smrs[idx].obj, names)) {
                 L("[BONENAME] SMR #%d '%s' bones=%zu", idx,
                   g_smrs[idx].name.c_str(), names.size());
-                game::dump_bone_names(names, 48);
+                game::dump_bone_names(names, 160);   // 全量打，翻译层要靠名字做映射
             }
             if (!game::name_hook_installed()) {
                 game::install_name_hook(64);
