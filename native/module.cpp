@@ -23,6 +23,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <time.h>
+#include <math.h>
 #include <dlfcn.h>
 #include <link.h>
 #include <elf.h>
@@ -957,16 +958,69 @@ static std::string find_pmx_path() {
 //
 // 现在只认名字里带 Body 且骨骼够多的，找不到就返回 -1，
 // 让上层回到 IDLE 继续等（进入主城后才会扫到真正的角色）。
+// 取离主相机最近的 Body。
+//
+// 历史：以前是「骨骼最多的 Body」——主城里 NPC/换装件多、战斗里对面也可能
+// 骨骼更多，结果模型被挂到了对面角色身上（用户实测）。
+// 玩家角色永远离相机最近，改按距离选（ModelMod v92 也是这么做的）。
 static int pick_target_smr() {
-    // 取骨骼最多的 Body：主城里同时有一堆 NPC/换装件（build-61 实测
-    // 166 个 SMR，第一个 Body 是 15042_02_Body_PX 只有 59 骨），
-    // 而目标角色骨架是 160+ 骨。骨骼最多那个才是正主。
-    int best = -1;
+    // 相机位置
+    float cam[3] = {0, 0, 0};
+    bool haveCam = false;
+    {
+        Il2CppClass* camCls = find_class_any("UnityEngine", "Camera");
+        Il2CppClass* trCls  = find_class_any("UnityEngine", "Transform");
+        const MethodInfo* mMain = camCls ? find_method_any(camCls, "get_main") : nullptr;
+        const MethodInfo* mTr   = camCls ? find_method_any(camCls, "get_transform") : nullptr;
+        const MethodInfo* mPos  = trCls  ? find_method_any(trCls, "get_position") : nullptr;
+        void* c = mMain ? invoke(mMain, nullptr, nullptr) : nullptr;
+        void* t = (c && mTr) ? invoke(mTr, c, nullptr) : nullptr;
+        void* p = (t && mPos) ? invoke(mPos, t, nullptr) : nullptr;
+        if (p) {
+            float* f = (float*)((char*)p + 16);
+            cam[0] = f[0]; cam[1] = f[1]; cam[2] = f[2];
+            haveCam = true;
+        }
+    }
+
+    Il2CppClass* trCls = find_class_any("UnityEngine", "Transform");
+    const MethodInfo* mGetTr  = find_method_any(g_smrClass, "get_transform");
+    const MethodInfo* mPos    = trCls ? find_method_any(trCls, "get_position") : nullptr;
+
+    int   best = -1;
+    float bestD2 = 0.0f;
     for (size_t i = 0; i < g_smrs.size(); i++) {
         const SmrInfo& s = g_smrs[i];
         if (s.name.find("Body") == std::string::npos) continue;
         if (s.boneCount < 40) continue;
-        if (best < 0 || s.boneCount > g_smrs[(size_t)best].boneCount) best = (int)i;
+
+        float d2 = 0.0f;
+        bool have = false;
+        if (haveCam && mGetTr && mPos) {
+            void* tr = invoke(mGetTr, s.obj, nullptr);
+            void* p  = tr ? invoke(mPos, tr, nullptr) : nullptr;
+            if (p) {
+                float* f = (float*)((char*)p + 16);
+                const float dx = f[0] - cam[0];
+                const float dy = f[1] - cam[1];
+                const float dz = f[2] - cam[2];
+                d2 = dx * dx + dy * dy + dz * dz;
+                have = true;
+            }
+        }
+        L("[PICK] #%zu '%s' bones=%d dist=%.2f%s", i, s.name.c_str(), s.boneCount,
+          have ? sqrtf(d2) : -1.0f, have ? "" : "(无位置)");
+
+        if (!have) {   // 拿不到位置就退回骨骼最多
+            if (best < 0 || s.boneCount > g_smrs[(size_t)best].boneCount) best = (int)i;
+            continue;
+        }
+        if (best < 0 || !haveCam || d2 < bestD2) { best = (int)i; bestD2 = d2; }
+    }
+
+    if (best >= 0) {
+        L("[PICK] 选中 #%d '%s' bones=%d（主相机附近）", best,
+          g_smrs[(size_t)best].name.c_str(), g_smrs[(size_t)best].boneCount);
     }
     return best;
 }
