@@ -485,13 +485,12 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
         MLOG("[MESH] set_bindposes missing or no bones");
     }
 
-    // ---- 8) UploadMeshData ----
-    MLOG("[MESH] step8/8 UploadMeshData...");
-    if (mc.mUpload) {
-        uint8_t keepReadable = 1;   // true：保留 CPU 副本，方便后面调试
-        void* a[1] = { &keepReadable };
-        uo::u_call_void(mesh, mc.mUpload, a);
-    }
+    // ---- 8) 不调 UploadMeshData ----
+    // 实测（2026-10-22 frida + /proc/mem）：调了 UploadMeshData(true) 之后
+    // mesh native 的顶点缓冲区被标记为空、SMR 的 +0x1d8 建不出来、
+    // get_bounds() 返回 0、isVisible 即使为 1 也不渲染。
+    // ModelMod 的 spawn_model_object（真的显示出来的那份）没有这一步。
+    MLOG("[MESH] step8/8 UploadMeshData skipped (会导致顶点缓冲被清空)");
 
     out.mesh = mesh;
     out.vertexCount = (int)nv;
