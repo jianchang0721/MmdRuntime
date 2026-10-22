@@ -704,7 +704,10 @@ static void census_and_anchor() {
         if (active) score += 10;
         if (s.boneCount >= 40) score += 10;
         if (shareAnc) score += 100;
-        if (fabsf(cx) < 1.5f && cz > 1.0f && cz < 8.0f) score += 40;
+        // Unity view space: forward is NEGATIVE z. Build-147 logged sane
+        // objects at cz=-7.33 and garbage ones at cz=-4186, and the old
+        // "cz > 1 && cz < 8" test could never be true.
+        if (fabsf(cx) < 2.5f && cz < -1.0f && cz > -12.0f) score += 60;
         if (sx >= 0 && pixW > 0 && pixH > 0) {
             const float u = sx / (float)pixW, v = sy / (float)pixH;
             if (u > 0.30f && u < 0.70f && v > 0.10f && v < 0.55f) score += 20;
