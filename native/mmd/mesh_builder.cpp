@@ -39,6 +39,9 @@ struct MeshClasses {
     void* mSetVertices = nullptr;
     void* mSetNormals = nullptr;
     void* mSetUV = nullptr;
+    void* mSetUV2 = nullptr;   // 诊断：游戏 shader 可能读 TEXCOORD1
+    void* mSetUV3 = nullptr;
+    void* mSetUV4 = nullptr;
     void* mSetTriangles = nullptr;
     void* mSetTrianglesSub = nullptr;   // SetTriangles(int[], int, bool)（Unity 2018 只有 3 参版本）
     void* mGetSubMeshCount = nullptr;   // get_subMeshCount，用来验证 setter 真生效
@@ -116,6 +119,12 @@ bool init_mesh_classes(MeshClasses& mc) {
     mc.mSetVertices     = uo::u_method(mc.meshCls, "set_vertices", 1);
     mc.mSetNormals      = uo::u_method(mc.meshCls, "set_normals", 1);
     mc.mSetUV           = uo::u_method(mc.meshCls, "set_uv", 1);
+    // 游戏角色 shader 很可能拿 TEXCOORD1/2 当主图 UV（它们自己的网格就这么排的），
+    // 我们只写 uv0 的话每个部位只会采到一个固定纹素 → 「每个部位一块颜色、拼不成人」。
+    // 所以四路全写一份，管它读哪个。
+    mc.mSetUV2          = uo::u_method(mc.meshCls, "set_uv2", 1);
+    mc.mSetUV3          = uo::u_method(mc.meshCls, "set_uv3", 1);
+    mc.mSetUV4          = uo::u_method(mc.meshCls, "set_uv4", 1);
     mc.mSetTriangles    = uo::u_method(mc.meshCls, "set_triangles", 1);
     mc.mSetSubMeshCount = uo::u_method(mc.meshCls, "set_subMeshCount", 1);
     // SetTriangles 有 int[] 和 List<int> 两个双参重载，得按第一个参数类型筛
@@ -328,6 +337,11 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
             }
             void* a[1] = { arr };
             uo::u_call_void(mesh, mc.mSetUV, a);
+            if (mc.mSetUV2) uo::u_call_void(mesh, mc.mSetUV2, a);
+            if (mc.mSetUV3) uo::u_call_void(mesh, mc.mSetUV3, a);
+            if (mc.mSetUV4) uo::u_call_void(mesh, mc.mSetUV4, a);
+            MLOG("[MESH] uv 写入: uv0=1 uv2=%d uv3=%d uv4=%d（同数据）",
+                 mc.mSetUV2 ? 1 : 0, mc.mSetUV3 ? 1 : 0, mc.mSetUV4 ? 1 : 0);
         }
     }
 

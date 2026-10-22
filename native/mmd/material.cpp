@@ -143,7 +143,19 @@ bool build_materials(const Model& model,
 
     out.items.assign(model.materials.size(), nullptr);
 
-    Il2CppString* texName = g_api.string_new("_MainTex");
+    // 主贴图属性名候选：游戏角色 shader 不一定叫 _MainTex。
+    // 先用 HasProperty 探一圈，哪个存在就用哪个；一个都没有才回退 _MainTex。
+    static const char* kTexProps[] = {
+        "_MainTex", "_BaseMap", "_BaseColorMap", "_MainTexture",
+        "_Tex", "_DiffuseTex", "_Albedo", "_BodyTex",
+    };
+    const int kTexPropCount = (int)(sizeof(kTexProps) / sizeof(kTexProps[0]));
+    Il2CppString* texPropStr[8] = { nullptr };
+    for (int k = 0; k < kTexPropCount && k < 8; k++)
+        texPropStr[k] = g_api.string_new(kTexProps[k]);
+
+    void* mHasProp = uo::u_method(mc.matCls, "HasProperty", 1);
+
     Il2CppString* colName = g_api.string_new("_Color");
 
     for (size_t i = 0; i < model.materials.size(); i++) {
@@ -165,15 +177,51 @@ bool build_materials(const Model& model,
         }
 
         // 贴图
-        if (mc.setTexture && texName) {
+        if (mc.setTexture) {
             void* t = nullptr;
             if (m.texIndex >= 0 && (size_t)m.texIndex < tex.items.size()) {
                 t = tex.items[(size_t)m.texIndex];
             }
             if (t) {
-                // string / Texture 都是引用类型：直接传对象指针
-                void* a2[2] = { texName, t };
+                // 探哪个属性名真存在
+                int pick = -1;
+                if (mHasProp) {
+                    for (int k = 0; k < kTexPropCount; k++) {
+                        if (!texPropStr[k]) continue;
+                        void* a1p[1] = { texPropStr[k] };
+                        void* r = uo::u_call(mat, mHasProp, a1p);
+                        if (r && *(uint8_t*)((char*)r + 16)) { pick = k; break; }
+                    }
+                }
+                if (pick < 0) pick = 0;   // 一个都没探到，硬上 _MainTex
+
+                void* a2[2] = { texPropStr[pick], t };
                 uo::u_call_void(mat, mc.setTexture, a2);
+
+                // 读回验证（前 5 个材质打，别刷屏）
+                if (i < 5) {
+                    void* mGet = uo::u_method(mc.matCls, "get_texture", 1);
+                    void* got = nullptr;
+                    if (mGet) {
+                        void* a1g[1] = { texPropStr[pick] };
+                        got = uo::u_call(mat, mGet, a1g);
+                    }
+                    if (logf) logf("[MAT] #%zu 贴图 -> '%s' 设=%p 读回=%p %s",
+                                   i, kTexProps[pick], t, got, got ? "OK" : "<-- 没绑上！");
+
+                    // 第一次把候选名单全探一遍，把 shader 到底有哪些属性名记下来
+                    if (i == 0 && mHasProp) {
+                        char line[256]; int off = 0; line[0] = 0;
+                        for (int k = 0; k < kTexPropCount; k++) {
+                            if (!texPropStr[k]) continue;
+                            void* a1p[1] = { texPropStr[k] };
+                            void* r = uo::u_call(mat, mHasProp, a1p);
+                            int has = (r && *(uint8_t*)((char*)r + 16)) ? 1 : 0;
+                            off += snprintf(line + off, sizeof(line) - off, " %s=%d", kTexProps[k], has);
+                        }
+                        if (logf) logf("[MAT] 属性探测:%s", line);
+                    }
+                }
             }
         }
 
