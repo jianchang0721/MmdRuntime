@@ -1331,6 +1331,19 @@ static void tick_body() {
     // 切场景时引擎会改 cullingMask，补一次不够。
     game::layer_guard::tick();
 
+    // 崩溃探测器保活：
+    //   sigaltstack 是线程级的，tick 跑的 UnityMain 要单独装；
+    //   处理器可能被 libnpth_wrapper 之类的顶掉，每 3 秒查一次、掉了就重装。
+    {
+        static bool altDone = false;
+        if (!altDone) { altDone = true; crash_report::prepare_thread(); }
+        static long long lastCrashChk = 0;
+        if (now_ms() - lastCrashChk > 3000) {
+            lastCrashChk = now_ms();
+            crash_report::check();
+        }
+    }
+
     refresh_status();   // 状态快照每帧刷一次，UI 侧随时能读
     g_inTick = 0;
 }

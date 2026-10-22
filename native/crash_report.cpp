@@ -112,14 +112,26 @@ void fmt_addr(char* out, size_t n, uintptr_t a) {
 void handler(int sig, siginfo_t* si, void* uc_) {
     ucontext_t* uc = (ucontext_t*)uc_;
 
-    // 现场重读一遍 maps：装上之后新 mmap 的库也能查到
-    load_maps();
-
     uintptr_t pc = (uintptr_t)uc->uc_mcontext.pc;
     uintptr_t lr = (uintptr_t)uc->uc_mcontext.regs[30];
     uintptr_t fp = (uintptr_t)uc->uc_mcontext.regs[29];
     uintptr_t sp = (uintptr_t)uc->uc_mcontext.sp;
     uintptr_t far = (uintptr_t)si->si_addr;
+
+    // 先把裸地址写出去再解析——上一版先 load_maps 再写，
+    // 万一在 load_maps 里再崩就一个字都留不下（build-125 实测就是什么都没留）。
+    {
+        char head[256];
+        int hl = snprintf(head, sizeof head,
+            "[CRASH] enter sig=%d code=%d tid=%d fault=0x%lx pc=0x%lx lr=0x%lx sp=0x%lx fp=0x%lx\n",
+            sig, si->si_code, (int)syscall(__NR_gettid),
+            (unsigned long)far, (unsigned long)pc, (unsigned long)lr,
+            (unsigned long)sp, (unsigned long)fp);
+        raw_write(head, hl);
+    }
+
+    // 现场重读一遍 maps：装上之后新 mmap 的库也能查到
+    load_maps();
 
     char a1[160], a2[160], a3[160];
     fmt_addr(a1, sizeof a1, pc);
@@ -176,16 +188,61 @@ void install(const char* logPath) {
     sa.sa_flags     = SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
 
-    sigaction(SIGSEGV, &sa, nullptr);
+    struct sigaction old;
+    memset(&old, 0, sizeof old);
+    sigaction(SIGSEGV, &sa, &old);
     sigaction(SIGBUS,  &sa, nullptr);
     sigaction(SIGILL,  &sa, nullptr);
     sigaction(SIGABRT, &sa, nullptr);
     sigaction(SIGFPE,  &sa, nullptr);
 
-    char line[256];
-    int len = snprintf(line, sizeof line, "[CRASH] handler installed fd=%d maps=%d\n",
-                       g_fd, g_nmaps);
+    char line[320];
+    int len = snprintf(line, sizeof line,
+        "[CRASH] handler installed fd=%d maps=%d prev=%p flags=0x%x\n",
+        g_fd, g_nmaps, (void*)old.sa_sigaction, (unsigned)old.sa_flags);
     raw_write(line, len);
+}
+
+void prepare_thread() {
+    stack_t ss;
+    memset(&ss, 0, sizeof ss);
+    ss.ss_sp    = g_altstack;
+    ss.ss_size  = sizeof(g_altstack);
+    ss.ss_flags = 0;
+    sigaltstack(&ss, nullptr);
+}
+
+// tick 里每几秒调一次：看我们的处理器还在不在。
+// build-125 实测：进程还是 SIGSEGV 死了，但一行 [CRASH] 都没写，
+// 最大嫌疑是装完以后又被别人（libnpth_wrapper / Unity）覆盖了。
+void check() {
+    if (g_fd < 0) return;
+
+    struct sigaction cur;
+    memset(&cur, 0, sizeof cur);
+    if (sigaction(SIGSEGV, nullptr, &cur) != 0) return;
+
+    static int wasOurs = 1;
+    if (cur.sa_sigaction != handler) {
+        // 只在状态变化时记一行，否则每 3 秒刷一条没意义
+        if (wasOurs) {
+            wasOurs = 0;
+            char line[256];
+            int len = snprintf(line, sizeof line,
+                "[CRASH] handler 被覆盖了！现在=%p 我们=%p -> 重装\n",
+                (void*)cur.sa_sigaction, (void*)handler);
+            raw_write(line, len);
+        }
+
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_sigaction = handler;
+        sa.sa_flags     = SA_SIGINFO | SA_ONSTACK;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGSEGV, &sa, nullptr);
+        sigaction(SIGBUS,  &sa, nullptr);
+        sigaction(SIGABRT, &sa, nullptr);
+    }
 }
 
 }  // namespace crash_report
