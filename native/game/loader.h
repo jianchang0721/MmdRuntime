@@ -32,6 +32,7 @@ struct LoadResult {
     int  textures  = 0;     // 成功解码的贴图数
     int32_t meshId = 0;
     void* mesh = nullptr;
+    void* modelRoot = nullptr;   // Transform of our MMDModel node (scene root)
     char  error[256] = {0};
     // 钉住 mesh / 材质的 gchandle（C++ 裸指针引用，GC 不认，必须 pin）
     std::vector<uint32_t> pinHandles;

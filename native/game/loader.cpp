@@ -118,10 +118,16 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     // 必须与 module.cpp 的 UiCmd::modelScale 默认值一致（0.08），
     // 否则 tick 首帧的 apply 会把这里的缩放覆盖掉。
     const float kModelScale = 0.08f;
-    void* modelRoot = uo::create_node("MMDModel", roleRoot, 0.0f, 0.0f, 0.0f);
+    // Model root goes to the SCENE ROOT, not under the character:
+    // if we parent it to the game character, the whole model disappears the
+    // moment that character gets deactivated (pooled / switched out).
+    // module.cpp copies the anchored character's world transform onto it每frame.
+    void* modelRoot = uo::create_node("MMDModel", nullptr, 0.0f, 0.0f, 0.0f);
     if (!modelRoot) { set_err(out, "create model root failed"); return false; }
     uo::set_local_scale(modelRoot, kModelScale, kModelScale, kModelScale);
-    LLOG("[LOADER] model root=%p parent=%p scale=%.3f", modelRoot, roleRoot, kModelScale);
+    out.modelRoot = modelRoot;
+    LLOG("[LOADER] model root=%p (scene root) roleRoot=%p scale=%.3f",
+         modelRoot, roleRoot, kModelScale);
 
     // ---- ③ 骨骼树（挂到模型根下）----
     if (!out.skeleton.build(model, modelRoot)) {

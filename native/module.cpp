@@ -574,6 +574,7 @@ struct AnchorBone {
 
 static std::vector<AnchorBone> g_anchorBones;
 static void* g_anchorSmr   = nullptr;
+static void* g_anchorTr    = nullptr;   // Transform of the anchored character
 static int   g_anchorIdx   = -1;
 static int   g_anchorScore = 0;
 
@@ -783,6 +784,7 @@ static void census_and_anchor() {
     g_anchorIdx = best;
     g_anchorScore = bestScore;
     g_anchorSmr = g_smrs[(size_t)best].obj;
+    g_anchorTr  = mGetTr ? invoke(mGetTr, g_anchorSmr, nullptr) : nullptr;
 
     void* arr = mBones ? invoke(mBones, g_anchorSmr, nullptr) : nullptr;
     if (!arr) { L("[ANCHOR] get_bones 返回空"); return; }
@@ -914,11 +916,32 @@ static void retarget_update() {
         game::skin::set_bone_world_rot(g_pairs[i].mmd, quat);   // feed CPU skinning
     }
 
+    // Anchor the whole model at the character's world transform. The model
+    // root lives at the SCENE root, so it survives the character being
+    // deactivated (pooled) and never vanishes mid-frame.
+    if (g_anchorTr && load_ref().modelRoot && sGetPos && sSetPos && sGetRot && sSetRot) {
+        void* q = invoke(sGetRot, g_anchorTr, nullptr);
+        if (q) {
+            float quat[4];
+            memcpy(quat, (char*)q + 16, sizeof(quat));
+            void* a[1] = { quat };
+            invoke(sSetRot, load_ref().modelRoot, a);
+        }
+        void* p = invoke(sGetPos, g_anchorTr, nullptr);
+        if (p) {
+            float v[3];
+            memcpy(v, (char*)p + 16, sizeof(v));
+            void* a[1] = { v };
+            invoke(sSetPos, load_ref().modelRoot, a);
+        }
+    }
+
     // Recompute skinned vertices and upload them to the MeshRenderer mesh.
     game::skin::update();
 
-    // position follow: put our center bone at the game pelvis position
-    if (sGetPos && sSetPos && g_rtCenterGame >= 0 && g_rtCenterMmd >= 0) {
+    // Position now comes from the model ROOT (see above); moving the center
+    // bone as well would double-shift. Keep it disabled.
+    if (false && sGetPos && sSetPos && g_rtCenterGame >= 0 && g_rtCenterMmd >= 0) {
         void* gt = g_anchorBones[(size_t)g_rtCenterGame].tr;
         void* mt = load_ref().skeleton.transform_at(g_rtCenterMmd);
         if (gt && mt) {
