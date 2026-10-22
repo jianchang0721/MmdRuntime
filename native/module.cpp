@@ -46,6 +46,7 @@
 #include "public/mmd_api.h"
 #include "game/loader.h"
 #include "game/self_smr.h"
+#include "game/layer_guard.h"
 #include <dirent.h>
 #include <strings.h>
 #include "unity/il2cpp_api.h"
@@ -1298,6 +1299,11 @@ static void tick_body() {
 
     // 跨帧观测自建 SMR 的 isVisible / bounds（每 60 帧一次）
     game::probe_self_tick();
+
+    // layer 守卫（ModelMod v88 的 ensure_model_visible）：
+    // 每 200ms 检查一次模型层还在不在、相机 cullingMask 还开着没。
+    // 切场景时引擎会改 cullingMask，补一次不够。
+    game::layer_guard::tick();
 
     refresh_status();   // 状态快照每帧刷一次，UI 侧随时能读
     g_inTick = 0;

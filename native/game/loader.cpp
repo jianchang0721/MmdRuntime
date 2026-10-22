@@ -195,6 +195,42 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     }
 
     // =============================================================
+    // D 方案（2026-10-22 起先试）：MeshFilter + MeshRenderer
+    //
+    // 为什么要它：自建 SMR 的 m_Mesh/m_Bones/材质全写对、get_sharedMesh
+    // 读回非空、isVisible=1，但 +0x1d8（蒙皮缓存）永远为 0、Renderer bounds
+    // 恒 0 —— Unity 的 SMR 只在自己的 SetMesh 路径里建蒙皮缓存，直写字段
+    // 绕过了那一步。MeshRenderer 没有蒙皮，顶点走 Unity 标准上传路径。
+    // 这条路只负责「把模型画出来」；蒙皮/翻译层后面再接。
+    // 失败就继续往下走 C 方案（自建 SMR），不丢功能。
+    // =============================================================
+    {
+        std::vector<void*> matsOk;
+        for (void* mp : mats.items) if (mp) matsOk.push_back(mp);
+        if (!matsOk.empty() && matsOk.size() < (size_t)bm.subMeshes)
+            matsOk.resize((size_t)bm.subMeshes, matsOk[0]);
+        LLOG("[LOADER] materials: %zu 有效 / %zu 原始 (submesh=%d)",
+             matsOk.size(), mats.items.size(), bm.subMeshes);
+
+        game::SelfSmr self;
+        if (game::create_self_mesh_renderer(modelRoot, smr.managed, bm.mesh,
+                                            matsOk.empty() ? nullptr : matsOk.data(),
+                                            (int)matsOk.size(), self)) {
+            out.mesh      = bm.mesh;
+            out.verts     = bm.vertexCount;
+            out.tris      = bm.indexCount / 3;
+            out.subMeshes = bm.subMeshes;
+            out.boneSlots = nb;
+            out.meshId    = uo::instance_id(bm.mesh);
+            out.ok        = true;
+            LLOG("[LOADER] MR 路径 OK: go=%p meshId=%d layer=%d verts=%d tris=%d subs=%d",
+                 self.go, out.meshId, self.layer, out.verts, out.tris, out.subMeshes);
+            return true;
+        }
+        LLOG("[LOADER] MR 路径失败，回退自建 SMR（原因见上面的 [MR] 日志）");
+    }
+
+    // =============================================================
     // C 方案：自建 SMR（build-79 已证实给游戏 SMR 换 mesh 必崩）
     // =============================================================
     const bool kUseSelfSmr = true;

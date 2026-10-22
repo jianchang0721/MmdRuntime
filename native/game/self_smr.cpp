@@ -9,6 +9,7 @@
 
 #include "logsink.h"
 #include "bone_hook.h"
+#include "layer_guard.h"
 #include "smr_bind.h"
 #include "smr_layout.h"
 #include "unity/il2cpp_api.h"
@@ -73,6 +74,15 @@ static void dump_renderer_state(const char* tag, void* renderer) {
         if (r) vis = *(uint8_t*)((char*)r + 16) ? 1 : 0;
     }
     GLOG("[VIS] %s enabled=%d isVisible=%d", tag, en, vis);
+
+    // forceRenderingOff：Unity 2018.3+ 的硬开关，一行 true 就彻底不渲染，
+    // 跟 bounds / 材质 / layer 都无关，必须单独看一眼。
+    void* mForce = uo::u_method(rCls, "get_forceRenderingOff", 0);
+    if (mForce) {
+        void* r = uo::u_call(renderer, mForce, nullptr);
+        GLOG("[VIS] %s forceRenderingOff=%d", tag,
+             r ? (*(uint8_t*)((char*)r + 16) ? 1 : 0) : -1);
+    }
 
     if (mBounds) {
         void* r = uo::u_call(renderer, mBounds, nullptr);
@@ -192,9 +202,11 @@ static void dump_visibility(SelfSmr& s, void* sourceSmr, void* modelRoot) {
                         void* r = uo::u_call(tr, mPos, nullptr);
                         if (r) { float* q = (float*)((char*)r + 16); px = q[0]; py = q[1]; pz = q[2]; }
                     }
+                    // 注意：不能用 mask >= 0 判——0xB67DFF57 当 int32 是负数，
+                    // 会让这一列恒报 0（之前就这么误报了半个月）。一律按 uint32 看。
                     GLOG("[SCENE] cam[%d] '%s' pos=(%.1f,%.1f,%.1f) mask=0x%08X layer10=%d",
-                         i, nm ? nm : "?", px, py, pz, mask,
-                         (mask >= 0 && (mask & (1 << 10))) ? 1 : 0);
+                         i, nm ? nm : "?", px, py, pz, (uint32_t)mask,
+                         ((uint32_t)mask & (1u << 10)) ? 1 : 0);
                 }
             }
         }
@@ -285,29 +297,11 @@ bool create_self_smr(void* modelTransform,
     GLOG("[SELF] GameObject=%p Transform=%p", go, tr);
 
     // ---- 拷贝 layer（看不见模型的头号真因）----
-    // ~/ModelMod_repo 里踩过：不设 layer 的话相机 cullingMask 里没 Default 层，
-    // 模型画了但不渲染。直接抬用目标角色的 layer 最稳。
-    {
-        Il2CppClass* compCls = (Il2CppClass*)uo::u_class("UnityEngine", "Component");
-        Il2CppClass* goClsL  = (Il2CppClass*)uo::u_class("UnityEngine", "GameObject");
-        int layer = 0;
-        if (sourceSmr && compCls && goClsL) {
-            const MethodInfo* mGetGO = (const MethodInfo*)uo::u_method(compCls, "get_gameObject", 0);
-            void* sgo = mGetGO ? uo::u_call(sourceSmr, (void*)mGetGO, nullptr) : nullptr;
-            const MethodInfo* mGetLayer = (const MethodInfo*)uo::u_method(goClsL, "get_layer", 0);
-            if (sgo && mGetLayer) {
-                void* lr = uo::u_call(sgo, (void*)mGetLayer, nullptr);
-                if (lr) layer = *(int32_t*)((char*)lr + 16);
-            }
-        }
-        const MethodInfo* mSetLayer = (const MethodInfo*)uo::u_method(goClsL, "set_layer", 1);
-        if (mSetLayer) {
-            void* a[1] = { &layer };
-            uo::u_call_void(go, (void*)mSetLayer, a);
-        }
-        GLOG("[SELF] layer copied: %d (setLayer=%p)%s", layer, (void*)mSetLayer,
-             layer == 0 ? "  WARNING: layer=0，可能被相机 cullingMask 剔除" : "");
-    }
+    // v84 拷 layer、v88 周期补相机 cullingMask，两件事一起走 layer_guard。
+    // 以前这里只打「打算设的值」，从来没有读回验证——现在 apply() 内部
+    // 读回、登记模型、补相机 mask 一条龙。
+    out.layer = layer_guard::apply(go, sourceSmr);
+    layer_guard::ensure_once();
 
     // ---- 2) AddComponent(SkinnedMeshRenderer 的 Type) ----
     Il2CppClass* goCls = (Il2CppClass*)uo::u_class("UnityEngine", "GameObject");
@@ -569,6 +563,138 @@ bool create_self_smr(void* modelTransform,
 
     dump_visibility(out, sourceSmr, modelTransform);
     GLOG("[SELF] done: meshId=%d bones=%d mats=%d", meshId, boneCount, matCount);
+    return true;
+}
+
+// =====================================================================
+// D 方案：MeshFilter + MeshRenderer
+// =====================================================================
+bool create_self_mesh_renderer(void* modelTransform, void* sourceSmr, void* meshObj,
+                               void** materials, int matCount, SelfSmr& out) {
+    out = SelfSmr{};
+    if (!modelTransform || !meshObj) { GLOG("[MR] bad args"); return false; }
+
+    Il2CppClass* trCls = (Il2CppClass*)uo::u_class("UnityEngine", "Transform");
+    const MethodInfo* mGetGO = (const MethodInfo*)uo::u_method(trCls, "get_gameObject", 0);
+    void* go = mGetGO ? uo::u_call(modelTransform, (void*)mGetGO, nullptr) : nullptr;
+    if (!go) { GLOG("[MR] get_gameObject failed"); return false; }
+    out.go = go;
+    out.tr = modelTransform;
+    out.mode = 1;
+    GLOG("[MR] GameObject=%p Transform=%p", go, modelTransform);
+
+    Il2CppClass* goCls = (Il2CppClass*)uo::u_class("UnityEngine", "GameObject");
+    const MethodInfo* mAdd = find_method_typed(goCls, "AddComponent", 1, "Type");
+    if (!mAdd) mAdd = (const MethodInfo*)uo::u_method(goCls, "AddComponent", 1);
+    if (!mAdd) { GLOG("[MR] AddComponent missing"); return false; }
+
+    auto add_component = [&](const char* clsName) -> void* {
+        Il2CppClass* k = (Il2CppClass*)uo::u_class("UnityEngine", clsName);
+        if (!k) { GLOG("[MR] %s class missing", clsName); return nullptr; }
+        Il2CppReflectionType* ty = g_api.type_get_object(g_api.class_get_type(k));
+        if (!ty) { GLOG("[MR] %s type_get_object failed", clsName); return nullptr; }
+        void* a[1] = { ty };
+        void* c = uo::u_call(go, (void*)mAdd, a);
+        GLOG("[MR] AddComponent(%s) = %p", clsName, c);
+        return c;
+    };
+
+    // ---- 1) MeshFilter ----
+    void* mf = add_component("MeshFilter");
+    if (!mf) return false;
+    out.mf = mf;
+
+    Il2CppClass* mfCls = (Il2CppClass*)uo::u_class("UnityEngine", "MeshFilter");
+    void* mGetMesh = mfCls ? uo::u_method(mfCls, "get_sharedMesh", 0) : nullptr;
+    GLOG("[MR] MeshFilter get_sharedMesh=%p", mGetMesh);
+
+    bool attached = false;
+    void* setter = nullptr;
+    if (mfCls) setter = uo::u_method_typed(mfCls, "set_sharedMesh", 1, "Mesh");
+    if (!setter && mfCls) setter = uo::u_method(mfCls, "set_sharedMesh", 1);
+    if (!setter && mfCls) setter = uo::u_method_typed(mfCls, "set_mesh", 1, "Mesh");
+
+    if (setter) {
+        void* a[1] = { meshObj };
+        uo::u_call_void(mf, setter, a);
+        void* got = mGetMesh ? uo::u_call(mf, mGetMesh, nullptr) : nullptr;
+        attached = (got != nullptr);
+        GLOG("[MR] managed set_sharedMesh=%p 读回=%p %s", setter, got,
+             attached ? "OK" : "(没生效)");
+    } else {
+        GLOG("[MR] MeshFilter 没有 set_sharedMesh（被 strip），走偏移 probe");
+    }
+
+    void* mfn = obj_native(mf);
+    if (!attached && mfn && mGetMesh) {
+        int32_t meshId = uo::instance_id(meshObj);
+        GLOG("[MR] probe MeshFilter m_Mesh: native=%p 目标 instanceID=%d", mfn, meshId);
+        for (int off = 0x18; off <= 0x88; off += 4) {
+            int32_t save = *(int32_t*)((char*)mfn + off);
+            *(int32_t*)((char*)mfn + off) = meshId;
+            void* got = uo::u_call(mf, mGetMesh, nullptr);
+            if (got) {
+                GLOG("[MR] m_Mesh @+0x%x 命中（读回=%p），写前=%d", off, got, save);
+                attached = true;
+                break;
+            }
+            *(int32_t*)((char*)mfn + off) = save;
+        }
+        if (!attached) GLOG("[MR] probe 全落空（+0x18..+0x88），MeshFilter 布局与预期不同");
+    }
+
+    // ---- 2) MeshRenderer + 材质 ----
+    void* mr = add_component("MeshRenderer");
+    if (!mr) return false;
+    out.mr = mr;
+
+    if (materials && matCount > 0) {
+        Smr tmp;
+        tmp.managed = mr;
+        tmp.native = obj_native(mr);
+        if (!set_shared_materials(tmp, materials, matCount))
+            GLOG("[MR] set_shared_materials 失败");
+    } else {
+        GLOG("[MR] 没有材质，会走默认材质（粉红）");
+    }
+
+    // ---- 3) layer（组件加完再设，之后读回验证）----
+    out.layer = layer_guard::apply(go, sourceSmr);
+    layer_guard::ensure_once();
+
+    // ---- 4) 验证：MeshRenderer.bounds 由 mesh.bounds x transform 算，非 0 就是挂上了 ----
+    {
+        void* rCls = uo::u_class("UnityEngine", "Renderer");
+        void* mEn  = rCls ? uo::u_method(rCls, "get_enabled", 0) : nullptr;
+        void* mVis = rCls ? uo::u_method(rCls, "get_isVisible", 0) : nullptr;
+        void* mB   = rCls ? uo::u_method(rCls, "get_bounds", 0) : nullptr;
+        int en = -1, vis = -1;
+        float e0 = 0, e1 = 0, e2 = 0;
+        if (mEn)  { void* r = uo::u_call(mr, mEn, nullptr);  if (r) en  = *(uint8_t*)((char*)r + 16) ? 1 : 0; }
+        if (mVis) { void* r = uo::u_call(mr, mVis, nullptr); if (r) vis = *(uint8_t*)((char*)r + 16) ? 1 : 0; }
+        if (mB) {
+            void* r = uo::u_call(mr, mB, nullptr);
+            if (r) {
+                float* b = (float*)((char*)r + 16);
+                e0 = b[3]; e1 = b[4]; e2 = b[5];
+            }
+        }
+        GLOG("[MR] MeshRenderer enabled=%d isVisible=%d bounds e=(%.3f, %.3f, %.3f)",
+             en, vis, e0, e1, e2);
+
+        if (mGetMesh) {
+            void* m = uo::u_call(mf, mGetMesh, nullptr);
+            GLOG("[MR] MeshFilter.get_sharedMesh 读回=%p %s", m, m ? "OK" : "<-- mesh 没挂上");
+        }
+    }
+
+    if (!attached) { GLOG("[MR] mesh 没挂上，放弃这条路，交给 SMR 回退"); return false; }
+
+    g_selfSmrManaged = mr;
+    g_selfSmrNative  = obj_native(mr);
+
+    GLOG("[MR] OK: go=%p mf=%p mr=%p meshId=%d mats=%d layer=%d",
+         go, out.mf, out.mr, uo::instance_id(meshObj), matCount, out.layer);
     return true;
 }
 
