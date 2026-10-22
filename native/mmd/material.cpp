@@ -21,6 +21,15 @@
 #define MTLOG(...) logsink::Write(__VA_ARGS__)
 
 namespace mmd {
+
+// 诊断开关（必须在 find_first_shader 之前定义）
+//   0 = 正常（贴图 + 颜色 + 渲染队列）
+//   6 = 只 new Material(shader)，属性一个不设
+//   7 = 跳过 set_renderQueue
+//   8 = 跳过 SetColor
+static int   g_matMode = 0;
+static void* g_shaderOverride = nullptr;
+
 namespace {
 
 struct MatClasses {
@@ -88,6 +97,11 @@ bool init_mat_classes(MatClasses& mc, void (*logf)(const char*, ...)) {
 }
 
 void* find_first_shader(MatClasses& mc, const char** used, void (*logf)(const char*, ...)) {
+    if (g_shaderOverride) {
+        if (logf) logf("[MAT] 用游戏原材质的 shader（诊断）%p", g_shaderOverride);
+        *used = "<game-shader>";
+        return g_shaderOverride;
+    }
     if (!mc.shaderFind) return nullptr;
     for (const char* n : kShaderChain) {
         Il2CppString* s = g_api.string_new(n);
@@ -101,6 +115,9 @@ void* find_first_shader(MatClasses& mc, const char** used, void (*logf)(const ch
 }
 
 }  // namespace
+
+void set_material_mode(int m) { g_matMode = m; }
+void set_shader_override(void* shader) { g_shaderOverride = shader; }
 
 bool build_materials(const Model& model,
                      const TextureSet& tex,
@@ -141,6 +158,12 @@ bool build_materials(const Model& model,
         uo::u_call_void(mat, mc.ctorShader, a1);
         if (logf) logf("[MAT] #%zu ctor done mat=%p", i, mat);
 
+        if (g_matMode == 6) {
+            out.items[i] = mat;
+            out.created++;
+            continue;   // 只留 ctor，什么都不设
+        }
+
         // 贴图
         if (mc.setTexture && texName) {
             void* t = nullptr;
@@ -155,7 +178,7 @@ bool build_materials(const Model& model,
         }
 
         // 颜色（PMX 的 diffuse 是 RGBA，正好对上 Unity Color 的内存布局）
-        if (mc.setColor && colName) {
+        if (mc.setColor && colName && g_matMode != 8) {
             // Color 是值类型（struct），传栈上地址
             float col[4] = { m.diffuse[0], m.diffuse[1], m.diffuse[2], m.diffuse[3] };
             // colName 是引用类型传指针，col 是值类型数组名（本身就是地址）
@@ -164,7 +187,7 @@ bool build_materials(const Model& model,
         }
 
         // 渲染队列：半透明排到 Transparent
-        if (mc.setQueue) {
+        if (mc.setQueue && g_matMode != 7) {
             int32_t q = (m.diffuse[3] < 0.999f) ? 3000 : 2000;
             void* a1q[1] = { &q };
             uo::u_call_void(mat, mc.setQueue, a1q);

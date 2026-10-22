@@ -25,6 +25,11 @@ struct MaterialSet {
     const char* shaderName = "";  // 实际用上的 shader 名
 };
 
+// 诊断开关：0=正常 6=只 ctor 7=跳过 renderQueue 8=跳过 SetColor
+void set_material_mode(int mode);
+// 诊断：强制用指定的 Shader（传游戏原材质的 shader，绕过 Shader.Find）
+void set_shader_override(void* shader);
+
 bool build_materials(const Model& model,
                      const TextureSet& tex,
                      MaterialSet& out,

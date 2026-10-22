@@ -196,6 +196,23 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     gcGuard.enable_now();
     LLOG("[LOADER] GC restored before materials");
 
+    // 材质侧诊断开关（6/7/8 见 material.cpp 顶部注释）
+    mmd::set_material_mode((diagMode >= 6 && diagMode <= 8) ? diagMode : 0);
+
+    // mode 9：不用 Shader.Find，直接拿游戏原材质的 shader。
+    // 如果 Unlit/Texture 在这个 build 里被 strip 成空 pass，用游戏自己的就没事。
+    if (diagMode == 9) {
+        void* rCls = uo::u_class("UnityEngine", "Renderer");
+        void* mGetMat = rCls ? uo::u_method(rCls, "get_sharedMaterial", 0) : nullptr;
+        void* refMat = mGetMat ? uo::u_call(smr.managed, mGetMat, nullptr) : nullptr;
+        void* matCls = uo::u_class("UnityEngine", "Material");
+        void* mGetShader = matCls ? uo::u_method(matCls, "get_shader", 0) : nullptr;
+        void* sh = (refMat && mGetShader) ? uo::u_call(refMat, mGetShader, nullptr) : nullptr;
+        if (sh) { mmd::set_shader_override(sh); LLOG("[DIAG] mode=9 用原材质 shader=%p", sh); }
+        else    { LLOG("[DIAG] mode=9 拿不到原 shader，退回 Shader.Find"); }
+    }
+    if (diagMode >= 6) LLOG("[DIAG] 材质模式=%d", diagMode);
+
     mmd::MaterialSet mats;
     if (mmd::build_materials(model, tex, mats, logf_cb)) {
         out.materials = mats.created;
