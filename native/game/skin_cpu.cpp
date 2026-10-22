@@ -272,8 +272,10 @@ void update() {
     g_lastUs = (int)(now_us() - t0);
     g_updateCount++;
     if (g_updateCount % 120 == 1) {
-        SLOG("[SKIN] update #%d verts=%d bones=%d took=%dus",
-             g_updateCount, g_nVerts, g_nBones, g_lastUs);
+        // Also print vertex 0 so we can see whether the mesh actually moves.
+        SLOG("[SKIN] update #%d verts=%d bones=%d took=%dus v0=(%.3f,%.3f,%.3f)",
+             g_updateCount, g_nVerts, g_nBones, g_lastUs,
+             out[0], out[1], out[2]);
     }
 }
 

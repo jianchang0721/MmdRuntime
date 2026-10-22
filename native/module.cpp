@@ -936,6 +936,21 @@ static void retarget_update() {
         }
     }
 
+    // Diagnostic: every ~2s print the first driven bone's quaternion and the
+    // first skinned vertex, so we can tell "rotations never change" (wrong
+    // anchor) from "rotations change but math is wrong".
+    {
+        static int sDiagN = 0;
+        if ((++sDiagN % 120) == 1 && !g_pairs.empty()) {
+            void* gt0 = g_anchorBones[(size_t)g_pairs[0].game].tr;
+            void* q0 = (gt0 && sGetRot) ? invoke(sGetRot, gt0, nullptr) : nullptr;
+            float qq[4] = {0, 0, 0, 0};
+            if (q0) memcpy(qq, (char*)q0 + 16, sizeof(qq));
+            L("[RTDIAG] pairs=%zu bone0='%s' q=(%.3f,%.3f,%.3f,%.3f)",
+              g_pairs.size(), g_pairs[0].g, qq[0], qq[1], qq[2], qq[3]);
+        }
+    }
+
     // Recompute skinned vertices and upload them to the MeshRenderer mesh.
     game::skin::update();
 
