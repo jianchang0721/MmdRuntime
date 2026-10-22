@@ -31,6 +31,7 @@ add_library(mmdruntime SHARED
     game/self_smr.cpp
     game/layer_guard.cpp
     game/skin_cpu.cpp
+    game/cam_override.cpp
     game/loader.cpp
     game/camera_ctrl.cpp
 )

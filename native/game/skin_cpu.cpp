@@ -51,6 +51,12 @@ void*   g_mesh = nullptr;
 void*   mSetVertices = nullptr;
 void*   mSetNormals  = nullptr;
 
+// ---- 法线（白辉光的根源：只蒙皮位置、不蒙皮法线）----
+std::vector<float>    g_norm;      // 3 * nVerts，bind 姿态法线
+void*   g_normArr = nullptr;
+uint32_t g_normArrHandle = 0;
+static bool g_hasNormal = false;
+
 int g_lastUs = 0;
 int g_updateCount = 0;
 
@@ -123,6 +129,21 @@ bool init(const mmd::Model& model, void* meshObj) {
     g_nVerts = (int)model.verts.size();
     g_nBones = (int)model.bones.size();
 
+    // ---- 法线：必须一起蒙皮，否则角色一动就一块白辉光 ----
+    g_norm.assign((size_t)g_nVerts * 3, 0.0f);
+    g_hasNormal = false;
+    for (int i = 0; i < g_nVerts; i++) {
+        const mmd::Vertex& v = model.verts[(size_t)i];
+        const float nx = v.nrm[0], ny = v.nrm[1], nz = v.nrm[2];
+        const float len = sqrtf(nx*nx + ny*ny + nz*nz);
+        if (len > 1e-5f) {
+            g_norm[(size_t)i*3+0] = nx / len;
+            g_norm[(size_t)i*3+1] = ny / len;
+            g_norm[(size_t)i*3+2] = nz / len;
+            g_hasNormal = true;
+        }
+    }
+
     g_pos.assign((size_t)g_nVerts * 3, 0.0f);
     g_boneIdx.assign((size_t)g_nVerts * 4, 0);
     g_weight.assign((size_t)g_nVerts * 4, 0.0f);
@@ -172,6 +193,13 @@ bool init(const mmd::Model& model, void* meshObj) {
     mSetVertices = uo::u_method(meshCls, "set_vertices", 1);
     mSetNormals  = uo::u_method(meshCls, "set_normals", 1);
     if (!mSetVertices) { SLOG("[SKIN] set_vertices missing"); return false; }
+    if (mSetNormals && g_hasNormal) {
+        g_normArr = uo::u_new_array(vec3, (size_t)g_nVerts);
+        if (g_normArr && g_api.gchandle_new)
+            g_normArrHandle = g_api.gchandle_new((Il2CppObject*)g_normArr, true);
+    }
+    SLOG("[SKIN] normals: src=%d setNormals=%p arr=%p",
+         (int)g_hasNormal, (void*)mSetNormals, g_normArr);
 
     g_arr = uo::u_new_array(vec3, (size_t)g_nVerts);
     if (!g_arr) { SLOG("[SKIN] array alloc failed"); return false; }
@@ -246,6 +274,7 @@ void update() {
     // ---- 2) 逐顶点混合 ----
     float* out = (float*)uo::u_array_data(g_arr);
     if (!out) return;
+    float* nout = g_normArr ? (float*)uo::u_array_data(g_normArr) : nullptr;
 
     for (int i = 0; i < g_nVerts; i++) {
         const float* p = &g_pos[(size_t)i * 3];
@@ -253,6 +282,8 @@ void update() {
         const float* w  = &g_weight[(size_t)i * 4];
 
         float ax = 0, ay = 0, az = 0;
+        float nx = 0, ny = 0, nz = 0;
+        const float* np = &g_norm[(size_t)i * 3];
         for (int k = 0; k < 4; k++) {
             const float wk = w[k];
             if (wk <= 0.0f) continue;
@@ -260,14 +291,36 @@ void update() {
             ax += wk * (m[0]*p[0] + m[1]*p[1] + m[2]*p[2]  + m[3]);
             ay += wk * (m[4]*p[0] + m[5]*p[1] + m[6]*p[2]  + m[7]);
             az += wk * (m[8]*p[0] + m[9]*p[1] + m[10]*p[2] + m[11]);
+            // 法线必须一起蒙皮：法线留在 bind 姿态的话，光照/描边/球面贴图
+            // 全用错方向，角色一动就是一块白辉光（用户实测反馈）。
+            // 骨骼只有旋转+平移、无缩放，法线用同一个 3x3 即可。
+            if (nout) {
+                nx += wk * (m[0]*np[0] + m[1]*np[1] + m[2]*np[2]);
+                ny += wk * (m[4]*np[0] + m[5]*np[1] + m[6]*np[2]);
+                nz += wk * (m[8]*np[0] + m[9]*np[1] + m[10]*np[2]);
+            }
         }
         out[(size_t)i*3+0] = ax;
         out[(size_t)i*3+1] = ay;
         out[(size_t)i*3+2] = az;
+
+        if (nout) {
+            const float len = sqrtf(nx*nx + ny*ny + nz*nz);
+            if (len > 1e-5f) { nx /= len; ny /= len; nz /= len; }
+            else { nx = np[0]; ny = np[1]; nz = np[2]; }
+            nout[(size_t)i*3+0] = nx;
+            nout[(size_t)i*3+1] = ny;
+            nout[(size_t)i*3+2] = nz;
+        }
     }
 
     void* a[1] = { g_arr };
     uo::u_call_void(g_mesh, mSetVertices, a);
+
+    if (mSetNormals && g_normArr) {
+        void* an[1] = { g_normArr };
+        uo::u_call_void(g_mesh, mSetNormals, an);
+    }
 
     g_lastUs = (int)(now_us() - t0);
     g_updateCount++;

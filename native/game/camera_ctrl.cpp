@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "unity/il2cpp_api.h"
+#include "cam_override.h"
 #include "logsink.h"
 #include "unity/unity_objects.h"
 
@@ -183,11 +184,26 @@ static float read_axis(const char* name) {
     return r ? *(float*)((char*)r + 16) : 0.0f;
 }
 
+// ---- 把 cam_override 的钩子挂上（一次）----
+// 老做法的死结：我们在 eglSwapBuffers 里主动 set_position，游戏在 Update 里
+// 也会写相机，谁在后谁赢 —— 多数是游戏赢，于是「UI 动相机不动」。
+// 新做法：hook 写入侧 *_Injected，游戏写相机的那一刻我们改参数。
+static void ensure_cam_hook() {
+    static bool tried = false;
+    if (tried) return;
+    tried = true;
+    if (cam_override::install())
+        CLOG("[CAM] write-side hooks installed (game writes will be overridden)");
+    else
+        CLOG("[CAM] write-side hooks FAILED, falling back to active writes");
+}
+
 // =====================================================================
 // 每帧更新
 // =====================================================================
 void CameraCtrl::update() {
     if (!enabled || !transform || !g_refsReady) return;
+    ensure_cam_hook();
 
     // ---- 灵魂出窍：本体不动，摇杆推着相机飞 ----
     if (freeFly) {
@@ -233,7 +249,11 @@ void CameraCtrl::update() {
             uo::u_call_void(camera, g_setFov, a3);
         }
 
-        // 每 60 帧打一次摇杆值，确认游戏摇杆真的映射到这两个轴
+        // 把期望姿态交给写入侧 hook：游戏下次写相机时会自动带上我们的值
+    if (cam_override::captured())
+        cam_override::set_desired_pose(camPos, q);
+
+    // 每 60 帧打一次摇杆值，确认游戏摇杆真的映射到这两个轴
         static int flyBeat = 0;
         if (++flyBeat % 60 == 1) {
             CLOG("[CAM] fly h=%.2f v=%.2f pos=(%.1f, %.1f, %.1f)",
@@ -280,6 +300,7 @@ void CameraCtrl::update() {
         uo::u_call_void(camera, g_setFov, a3);
     }
 }
+
 
 void CameraCtrl::reset() {
     dist = 4.0f;

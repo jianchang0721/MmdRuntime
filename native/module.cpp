@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "game/camera_ctrl.h"
+#include "game/cam_override.h"
 #include "game/smr_layout.h"
 #include "game/bone_names.h"
 #include "mmd/pmx.h"
@@ -760,9 +761,8 @@ static void census_and_anchor() {
             if (strstr(low, "player") || strstr(low, "hero") || strstr(low, "mainrole")) score += 200;
         }
 
-        L("[CENSUS] #%zu '%s' bones=%d active=%d cam=(%.2f,%.2f,%.2f) shareAnc=%d screen=(%.2f,%.2f) score=%d",
-          i, s.name.c_str(), s.boneCount, (int)active, cx, cy, cz, shareAnc,
-          pixW ? sx / (float)pixW : -1.0f, pixH ? sy / (float)pixH : -1.0f, score);
+        L("[CENSUS] #%zu '%s' bones=%d active=%d world=(%.1f,%.1f,%.1f) cam=(%.2f,%.2f,%.2f) shareAnc=%d score=%d",
+          i, s.name.c_str(), s.boneCount, (int)active, wx, wy, wz, cx, cy, cz, shareAnc, score);
 
         if (s.boneCount >= 30 && score > bestScore) { bestScore = score; best = (int)i; }
     }
