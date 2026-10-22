@@ -246,12 +246,12 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     // 材质侧诊断开关（6/7/8 见 material.cpp 顶部注释）
     mmd::set_material_mode((diagMode >= 6 && diagMode <= 8) ? diagMode : 0);
 
-    // 【默认就用游戏原材质的 shader】
-    // build-131 实测：Unlit/Texture / 甚至连材质属性都不设，只要拿它建 Material
-    // 就会在渲染命令流里踩野指针崩（pc=libunity+0x826df8, fault=0x6800600000001）；
-    // 换成游戏自己角色材质用的 shader 后不崩且能出图。
-    // 所以 Shader.Find 那条回退链降级成兵家必争之外的兼顾。
-    {
+    // 【默认用 Shader.Find 链（Mobile/Diffuse 优先）】
+    // 这是 ModelMod 验证过能出图的组合：Mobile/Diffuse + mainTexture。
+    // 游戏自己的 shader 不认 _MainTex（build-137 实测八个属性名全是 0），
+    // 只有当 Shader.Find 全都拿不到时才拿它兜底。
+    // 想手动指定 shader 就在 mmd_shader 文件里写名字。
+    if (false) {
         void* rCls = uo::u_class("UnityEngine", "Renderer");
         void* mGetMat = rCls ? uo::u_method(rCls, "get_sharedMaterial", 0) : nullptr;
         void* refMat = mGetMat ? uo::u_call(smr.managed, mGetMat, nullptr) : nullptr;

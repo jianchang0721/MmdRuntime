@@ -40,11 +40,22 @@ struct MatClasses {
     void* setFloat   = nullptr;   // SetFloat(string, float)
     void* setQueue   = nullptr;   // set_renderQueue
     void* shaderFind = nullptr;   // Shader.Find(string) 静态
+
+    // ★ 老项目 ModelMod 验证过的路：mainTexture / color / shader 都是"属性"，
+    //   不依赖具体 shader 的贴图属性名（_MainTex / _BaseMap / _Tex 都行）。
+    //   build-137 实测：用 SetTexture("_MainTex") 时八个候选属性探测全是 0，
+    //   材质读回也是 null —— 游戏 shader 根本不认这个名字。
+    void* setMainTex  = nullptr;  // set_mainTexture(Texture)
+    void* getMainTex  = nullptr;  // get_mainTexture()
+    void* setColorP   = nullptr;  // set_color(Color)
+    void* getShader   = nullptr;  // get_shader()
 };
 
+// 顺序跟 ModelMod 一致：Mobile/Diffuse 当首选（它读标准 _MainTex，兼容性最好），
+// Unlit/Texture 放后面——本 build 实测它一建材质就崩渲染命令流。
 const char* kShaderChain[] = {
-    "Unlit/Texture",
     "Mobile/Diffuse",
+    "Unlit/Texture",
     "Sprites/Default",
     "Standard",
     "Diffuse",
@@ -84,6 +95,12 @@ bool init_mat_classes(MatClasses& mc, void (*logf)(const char*, ...)) {
     mc.setColor   = find_method_typed(mc.matCls, "SetColor",   2, "String");
     mc.setFloat   = find_method_typed(mc.matCls, "SetFloat",   2, "String");
     mc.setQueue   = uo::u_method(mc.matCls, "set_renderQueue", 1);
+
+    // 属性式（不依赖 shader 的贴图属性名）——ModelMod 那边就是靠这个出图的
+    mc.setMainTex = uo::u_method(mc.matCls, "set_mainTexture", 1);
+    mc.getMainTex = uo::u_method(mc.matCls, "get_mainTexture", 0);
+    mc.setColorP  = uo::u_method(mc.matCls, "set_color", 1);
+    mc.getShader  = uo::u_method(mc.matCls, "get_shader", 0);
 
     void* shaderCls = uo::u_class("UnityEngine", "Shader");
     if (shaderCls) mc.shaderFind = uo::u_method(shaderCls, "Find", 1);
@@ -167,8 +184,11 @@ bool build_materials(const Model& model,
         // Shader 是引用类型：args[0] = 对象指针本身，不是 &shader
         // （build-68 就是死在这：Material..ctor 拿到栈地址当 Shader，fault addr 0）
         void* a1[1] = { shader };
-        uo::u_call_void(mat, mc.ctorShader, a1);
-        if (logf) logf("[MAT] #%zu ctor done mat=%p", i, mat);
+        bool ctorOk = uo::u_call_void(mat, mc.ctorShader, a1);
+        void* shBack = mc.getShader ? uo::u_call(mat, mc.getShader, nullptr) : nullptr;
+        if (logf) logf("[MAT] #%zu ctor done mat=%p 无异常=%d shader读回=%p %s",
+                       i, mat, (int)ctorOk, shBack,
+                       shBack ? "OK" : "<-- 材质是空壳！");
 
         if (g_matMode == 6) {
             out.items[i] = mat;
@@ -176,57 +196,39 @@ bool build_materials(const Model& model,
             continue;   // 只留 ctor，什么都不设
         }
 
-        // 贴图
-        if (mc.setTexture) {
+        // 贴图：★ 用 mainTexture 属性（ModelMod 验证过的路），
+        // 不管 shader 内部把主图叫什么名字都能绑上。
+        {
             void* t = nullptr;
             if (m.texIndex >= 0 && (size_t)m.texIndex < tex.items.size()) {
                 t = tex.items[(size_t)m.texIndex];
             }
             if (t) {
-                // 探哪个属性名真存在
-                int pick = -1;
-                if (mHasProp) {
-                    for (int k = 0; k < kTexPropCount; k++) {
-                        if (!texPropStr[k]) continue;
-                        void* a1p[1] = { texPropStr[k] };
-                        void* r = uo::u_call(mat, mHasProp, a1p);
-                        if (r && *(uint8_t*)((char*)r + 16)) { pick = k; break; }
-                    }
+                bool bound = false;
+                if (mc.setMainTex) {
+                    void* am[1] = { t };
+                    bound = uo::u_call_void(mat, mc.setMainTex, am);
                 }
-                if (pick < 0) pick = 0;   // 一个都没探到，硬上 _MainTex
+                // 兜底：老办法 SetTexture("_MainTex", tex)
+                if (!bound && mc.setTexture && texPropStr[0]) {
+                    void* a2[2] = { texPropStr[0], t };
+                    uo::u_call_void(mat, mc.setTexture, a2);
+                }
 
-                void* a2[2] = { texPropStr[pick], t };
-                uo::u_call_void(mat, mc.setTexture, a2);
-
-                // 读回验证（前 5 个材质打，别刷屏）
                 if (i < 5) {
-                    void* mGet = uo::u_method(mc.matCls, "get_texture", 1);
-                    void* got = nullptr;
-                    if (mGet) {
-                        void* a1g[1] = { texPropStr[pick] };
-                        got = uo::u_call(mat, mGet, a1g);
-                    }
-                    if (logf) logf("[MAT] #%zu 贴图 -> '%s' 设=%p 读回=%p %s",
-                                   i, kTexProps[pick], t, got, got ? "OK" : "<-- 没绑上！");
-
-                    // 第一次把候选名单全探一遍，把 shader 到底有哪些属性名记下来
-                    if (i == 0 && mHasProp) {
-                        char line[256]; int off = 0; line[0] = 0;
-                        for (int k = 0; k < kTexPropCount; k++) {
-                            if (!texPropStr[k]) continue;
-                            void* a1p[1] = { texPropStr[k] };
-                            void* r = uo::u_call(mat, mHasProp, a1p);
-                            int has = (r && *(uint8_t*)((char*)r + 16)) ? 1 : 0;
-                            off += snprintf(line + off, sizeof(line) - off, " %s=%d", kTexProps[k], has);
-                        }
-                        if (logf) logf("[MAT] 属性探测:%s", line);
-                    }
+                    void* got = mc.getMainTex ? uo::u_call(mat, mc.getMainTex, nullptr) : nullptr;
+                    if (logf) logf("[MAT] #%zu mainTexture 设=%p 读回=%p %s",
+                                   i, t, got, got == t ? "OK" : (got ? "不一样" : "<-- 没绑上！"));
                 }
             }
         }
 
-        // 颜色（PMX 的 diffuse 是 RGBA，正好对上 Unity Color 的内存布局）
-        if (mc.setColor && colName && g_matMode != 8) {
+        // 颜色：先用 color 属性（不依赖 _Color 这个属性名），再兜底 SetColor("_Color")
+        if (mc.setColorP && g_matMode != 8) {
+            float col[4] = { m.diffuse[0], m.diffuse[1], m.diffuse[2], m.diffuse[3] };
+            void* ap[1] = { col };
+            uo::u_call_void(mat, mc.setColorP, ap);
+        } else if (mc.setColor && colName && g_matMode != 8) {
             // Color 是值类型（struct），传栈上地址
             float col[4] = { m.diffuse[0], m.diffuse[1], m.diffuse[2], m.diffuse[3] };
             // colName 是引用类型传指针，col 是值类型数组名（本身就是地址）
