@@ -177,6 +177,19 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         tex.items.clear();
     }
 
+    // mmd_checker：全部材质改用棋盘格贴图，专门验 UV
+    // （方格贴着表面大小均匀 = UV 正确；大小乱跳/撕裂 = UV 错）
+    if (access("/data/data/com.hermes.h1game/files/mmd_checker", F_OK) == 0) {
+        void* ck = mmd::make_checker_texture(256, 256, 16, logf_cb);
+        if (ck) {
+            tex.items.assign(model.textures.size(), ck);
+            if (g_api.gchandle_new) g_api.gchandle_new((Il2CppObject*)ck, true);
+            LLOG("[DIAG] 棋盘格贴图已铺到全部 %zu 个贴图槽（验证 UV）", tex.items.size());
+        } else {
+            LLOG("[DIAG] 棋盘格贴图创建失败");
+        }
+    }
+
     // 贴图必须钉住：材质里存的是 native PPtr，Texture2D 被 GC 收掉后
     // native 纹理就释放了，渲染线程下一帧解引用直接 SIGSEGV。
     // build-121 实测：MeshRenderer 真渲染之后，加载完 5~20 秒必崩（SIGSEGV），
@@ -213,6 +226,27 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         void* sh = (refMat && mGetShader) ? uo::u_call(refMat, mGetShader, nullptr) : nullptr;
         if (sh) { mmd::set_shader_override(sh); LLOG("[MAT] 默认用游戏原材质 shader=%p", sh); }
         else    { LLOG("[MAT] 拿不到游戏 shader，退回 Shader.Find 链"); }
+    }
+
+    // mmd_shader：文件里写 shader 名字（如 Mobile/Diffuse），用它做实验，
+    // 不用重编就能换 shader。空文件/不存在 = 用游戏原材质 shader。
+    {
+        char want[64] = {0};
+        int fd = open("/data/data/com.hermes.h1game/files/mmd_shader", O_RDONLY);
+        if (fd >= 0) {
+            int n = (int)read(fd, want, sizeof(want) - 1);
+            close(fd);
+            if (n > 0) {
+                for (int i = 0; i < n; i++) if (want[i] == '\n' || want[i] == '\r') want[i] = 0;
+                void* shCls = uo::u_class("UnityEngine", "Shader");
+                void* mFind = shCls ? uo::u_method(shCls, "Find", 1) : nullptr;
+                Il2CppString* s = g_api.string_new(want);
+                void* args[1] = { s };
+                void* sh = (mFind && s) ? uo::u_call(nullptr, mFind, args) : nullptr;
+                if (sh) { mmd::set_shader_override(sh); LLOG("[DIAG] 指定 shader '%s' -> %p", want, sh); }
+                else    { LLOG("[DIAG] Shader.Find('%s') 没找到，保持游戏 shader", want); }
+            }
+        }
     }
 
     // 诊断模式开关：10 = 单子网格（验证子网格/材质配对）

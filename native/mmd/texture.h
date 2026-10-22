@@ -27,6 +27,9 @@ struct TextureSet {
 
 // pmxPath：PMX 文件的绝对路径（用来推贴图所在目录）
 // logf：printf 风格日志回调，可传 nullptr
+// 诊断：造一张棋盘格贴图（验证 UV 对不对：方格在模型表面均匀 = UV 正常）
+void* make_checker_texture(int w, int h, int cell, void (*logf)(const char*, ...));
+
 bool load_textures(const Model& model,
                    const char* pmxPath,
                    TextureSet& out,

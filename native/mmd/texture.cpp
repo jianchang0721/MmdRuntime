@@ -144,6 +144,28 @@ void* make_texture(const TexClasses& tc,
 
 }  // namespace
 
+void* make_checker_texture(int w, int h, int cell, void (*logf)(const char*, ...)) {
+    if (w <= 0 || h <= 0) return nullptr;
+    if (cell <= 0) cell = 16;
+    TexClasses tc;
+    if (!init_tex_classes(tc, logf)) return nullptr;
+
+    std::vector<unsigned char> px((size_t)w * (size_t)h * 4);
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            const bool on = ((x / cell) & 1) ^ ((y / cell) & 1);
+            unsigned char* p = &px[((size_t)y * (size_t)w + (size_t)x) * 4];
+            p[0] = on ? 235 : 30;
+            p[1] = on ? 60  : 190;
+            p[2] = on ? 60  : 30;
+            p[3] = 255;
+        }
+    }
+    void* t = make_texture(tc, px.data(), w, h, logf);
+    if (logf) logf("[TEX] checker %dx%d cell=%d -> %p", w, h, cell, t);
+    return t;
+}
+
 bool load_textures(const Model& model,
                    const char* pmxPath,
                    TextureSet& out,
