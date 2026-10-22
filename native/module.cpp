@@ -595,6 +595,8 @@ static float vec3_get(void* boxed, int idx) {
     return ((float*)((char*)boxed + 16))[idx];
 }
 
+static void build_retarget();   // defined below, called after a successful anchor
+
 static void census_and_anchor() {
     Il2CppClass* trCls   = find_class_any("UnityEngine", "Transform");
     Il2CppClass* objCls  = find_class_any("UnityEngine", "Object");
@@ -712,7 +714,15 @@ static void census_and_anchor() {
             const float u = sx / (float)pixW, v = sy / (float)pixH;
             if (u > 0.30f && u < 0.70f && v > 0.10f && v < 0.55f) score += 20;
         }
-        if (s.name.find("Body") != std::string::npos) score += 5;
+        // Only the Body SMR carries the Bip001 skeleton. Face/Hair/Weapon
+        // SMRs sit at the same place and score the same geometrically, but
+        // their bone names never match -> zero retarget pairs (build-149).
+        if (s.name.find("Body") != std::string::npos) score += 40;
+        if (s.name.find("Face") != std::string::npos ||
+            s.name.find("Hair") != std::string::npos ||
+            s.name.find("Weapon") != std::string::npos ||
+            s.name.find("Cloak") != std::string::npos ||
+            s.name.find("Tui") != std::string::npos) score -= 60;
 
         // Ancestor chain names: the player character usually hangs under a
         // PlayerRoot / Player / Hero node. A "player" hit is worth more than
@@ -784,7 +794,8 @@ static void census_and_anchor() {
         L("[ANCHOR]   [%d] '%s' id=%d tr=%p h=%u", k, b.name, b.id, b.tr, b.handle);
         g_anchorBones.push_back(b);
     }
-    L("[ANCHOR] 完成：%zu 根骨骼已钉住", g_anchorBones.size());
+    L("[ANCHOR] done: %zu bones pinned", g_anchorBones.size());
+    build_retarget();   // anchor changed -> rebuild the Bip001 -> MMD map
 }
 
 // =====================================================================
