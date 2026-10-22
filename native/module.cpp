@@ -649,10 +649,20 @@ static void census_and_anchor() {
     int best = -1, bestScore = 0;
     for (size_t i = 0; i < g_smrs.size(); i++) {
         SmrInfo& s = g_smrs[i];
-        if (!s.obj) continue;
+        // 池子里的死对象：native 为空、或者骨骼数异常的直接跳（build-143 实测：
+        // 137 个 SMR 里第一个就把进程干崩了，大概率是在死对象上调方法）
+        if (!s.obj || !s.native) continue;
+        if (s.boneCount <= 0 || s.boneCount > 512) continue;
+
+        const bool probe = (i < 2);
+        if (probe) L("[CENSUS] probe #%zu obj=%p native=%p bones=%d", i, s.obj, s.native, s.boneCount);
 
         void* tr = mGetTr ? invoke(mGetTr, s.obj, nullptr) : nullptr;
-        void* p  = (tr && mPos) ? invoke(mPos, tr, nullptr) : nullptr;
+        if (probe) L("[CENSUS] probe #%zu tr=%p", i, tr);
+        if (!tr) continue;
+
+        void* p  = mPos ? invoke(mPos, tr, nullptr) : nullptr;
+        if (probe) L("[CENSUS] probe #%zu pos=%p", i, p);
         const float wx = vec3_get(p, 0), wy = vec3_get(p, 1), wz = vec3_get(p, 2);
 
         // 相机空间（Matrix4x4 列主序：m[col*4+row]）
@@ -660,14 +670,10 @@ static void census_and_anchor() {
         const float cy = view[1]*wx + view[5]*wy + view[9]*wz + view[13];
         const float cz = view[2]*wx + view[6]*wy + view[10]*wz + view[14];
 
-        // 屏幕投影（Vector3 值类型，传地址）
+        // 屏幕投影先关掉：build-143 实测这一步（值类型 Vector3 传参）很可能就是崩溃点，
+        // 而它对“锁玩家”不是必需信号（父链交集已经足够决定性）。
         float sx = -1, sy = -1, sz = 0;
-        if (cam && mW2S && p) {
-            float arg[3] = { wx, wy, wz };
-            void* a[1] = { arg };
-            void* r = invoke(mW2S, cam, a);
-            if (r) { sx = vec3_get(r, 0); sy = vec3_get(r, 1); sz = vec3_get(r, 2); }
-        }
+        if (false && cam && mW2S && p) {
 
         // 激活
         bool active = true;
@@ -677,7 +683,7 @@ static void census_and_anchor() {
             if (r) active = (*(uint8_t*)((char*)r + 16) != 0);
         }
 
-        // 父链交集
+        // 父链交集（build-143 崩在这里面也说不定：把每次 get_parent 的返回值打出来）
         int shareAnc = 0;
         if (mId && mParent) {
             void* t = tr;
@@ -687,7 +693,9 @@ static void census_and_anchor() {
                 for (int c = 0; c < camChainN; c++)
                     if (idv && idv == camChain[c]) { shareAnc = 1; break; }
                 if (shareAnc) break;
-                t = invoke(mParent, t, nullptr);
+                void* nx = invoke(mParent, t, nullptr);
+                if (probe) L("[CENSUS] probe #%zu parent[%d] id=%d -> %p", i, k, idv, nx);
+                t = nx;
             }
         }
 
