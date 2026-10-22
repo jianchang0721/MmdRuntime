@@ -852,12 +852,16 @@ enum Stage {
     ST_BIND,       // 绑 il2cpp（每秒重试）
     ST_CLASSES,    // 等 Unity 类表就绪（每秒重试）
     ST_SCAN,       // 扫 SMR（每 2 秒重试）
-    ST_IDLE,       // 待命：轮询 ui.conf，等命令
+    ST_IDLE,       // 待命：等命令
     ST_LOAD,       // 正在加载模型
-    ST_ACTIVE      // 模型已生效
+    ST_ACTIVE,     // 模型已生效
+    ST_DORMANT     // 睡死：等 UI 发「初始化」，进去什么都不碰
 };
 
-static Stage     g_stage = ST_WAIT;
+// 初始化完成后要不要接着加载（玩家点了「加载模型」但还没初始化时的意图）
+static volatile int g_pendingLoad = 0;
+
+static Stage     g_stage = ST_DORMANT;   // 默认不自动做事，等 UI 发「初始化」
 static long long g_t0 = 0;
 static int       g_ticks = 0;
 static char      g_status[256] = "init";
@@ -877,6 +881,7 @@ struct UiCmd {
     int   cmdRescan  = 0;
     int   cmdReapply = 0;
     int   cmdUnload  = 0;
+    int   cmdInit    = 0;   // UI 的「初始化」按钮：绑 il2cpp + 找类 + 扫 SMR
 };
 
 static pthread_mutex_t g_cfgMtx  = PTHREAD_MUTEX_INITIALIZER;
@@ -1054,6 +1059,7 @@ static void refresh_status() {
         case ST_IDLE:    s.gameState = MMD_GS_ATTACHED; break;
         case ST_LOAD:    s.gameState = MMD_GS_LOADING;  break;
         case ST_ACTIVE:  s.gameState = MMD_GS_ACTIVE;   break;
+        case ST_DORMANT: s.gameState = MMD_GS_UNKNOWN;  break;
         default:         s.gameState = MMD_GS_UNKNOWN;  break;
     }
     snprintf(s.statusMessage, sizeof(s.statusMessage), "%s", g_status);
@@ -1132,6 +1138,27 @@ static void tick_body() {
         }
         break;
 
+    case ST_DORMANT: {
+        // 默认状态：不对游戏做任何事，等玩家在 UI 里点「初始化」。
+        // 为什么：自动加载会赶在玩家还没进场景时摸 Unity 对象，
+        // build-121 实测会把游戏画面搞卡，所以改成手动两步。
+        bool init = false, apply = false;
+        pthread_mutex_lock(&g_cfgMtx);
+        init  = g_ui.cmdInit    != 0;
+        apply = g_ui.cmdReapply != 0;
+        if (init)  g_ui.cmdInit    = 0;
+        if (apply) { g_ui.cmdReapply = 0; g_pendingLoad = 1; }
+        if (init && !apply) g_pendingLoad = 0;   // 只初始化，不跟加载
+        pthread_mutex_unlock(&g_cfgMtx);
+
+        if (init || apply) {
+            snprintf(g_status, sizeof(g_status), "init requested");
+            L("[DORMANT] 收到指令 init=%d load=%d -> 开始初始化", (int)init, (int)apply);
+            g_stage = ST_BIND;
+        }
+        break;
+    }
+
     case ST_BIND: {
         static int tries = 0;
         static long long lastTry = 0;
@@ -1180,8 +1207,15 @@ static void tick_body() {
         if (scan_smrs()) {
             L("[UNITY] SMR found on scan #%d: %zu", scans, g_smrs.size());
             dump_smrs();
-            snprintf(g_status, sizeof(g_status), "ready (%zu SMR)", g_smrs.size());
-            g_stage = ST_IDLE;
+            if (g_pendingLoad) {
+                g_pendingLoad = 0;
+                snprintf(g_status, sizeof(g_status), "init done -> loading");
+                L("[SCAN] 初始化完成，接着加载模型");
+                g_stage = ST_LOAD;
+            } else {
+                snprintf(g_status, sizeof(g_status), "ready (%zu SMR)", g_smrs.size());
+                g_stage = ST_IDLE;
+            }
         } else if (scans >= 300) {
             snprintf(g_status, sizeof(g_status), "no SMR after %d scans", scans);
             g_stage = ST_IDLE;
@@ -1213,32 +1247,23 @@ static void tick_body() {
         pthread_mutex_lock(&g_cfgMtx);
         bool rescan  = g_ui.cmdRescan  != 0;
         bool reapply = g_ui.cmdReapply != 0;
-        bool hasUi   = g_hasUi;
-        bool want    = hasUi && g_ui.enableReplace;
+        bool reinit  = g_ui.cmdInit    != 0;
         g_ui.cmdRescan  = 0;
         g_ui.cmdReapply = 0;
+        g_ui.cmdInit    = 0;
         pthread_mutex_unlock(&g_cfgMtx);
 
-        // 兜底：UI 一直没连上来就在 15 秒后自动跑一次，
-        // 让「so 自己能不能加载模型」和「UI 能不能连上」两件事能分开定位
-        static bool autoTried = false;
-        if (!autoTried && !hasUi && g_t0 && now_ms() - g_t0 > 15000) {
-            autoTried = true;
-            snprintf(g_status, sizeof(g_status), "no ui, auto load");
-            L("[IDLE] 没有 UI 连上来，自动尝试加载一次");
-            g_stage = ST_LOAD;
-            break;
-        }
+        // 注：以前这里有两个自动加载（15 秒无 UI 兜底、打开总开关就加载），
+        // build-121 实测会把游戏画面搞卡，现在全部拆掉——只有玩家点按钮才动。
 
-        if (rescan) {
+        if (rescan || reinit) {
             g_smrs.clear();
             snprintf(g_status, sizeof(g_status), "rescan requested");
             g_stage = ST_SCAN;
             break;
         }
 
-        // 重新套用（或者第一次打开总开关）
-        if (reapply || (want && !g_load.ok)) {
+        if (reapply) {
             g_stage = ST_LOAD;
             break;
         }
@@ -1504,6 +1529,16 @@ static void api_set_scale(float s) {
     pthread_mutex_unlock(&g_cfgMtx);
 }
 
+// 「初始化」：只绑 il2cpp + 找 Unity 类 + 扫 SMR，不建模型。
+// 玩家手动点的第一步（为什么不一进游戏就自动跑：见 ST_DORMANT 的注释）。
+static void api_cmd_init() {
+    pthread_mutex_lock(&g_cfgMtx);
+    g_ui.cmdInit = 1;
+    g_hasUi = true;
+    pthread_mutex_unlock(&g_cfgMtx);
+    L("[API] cmd_init");
+}
+
 static void api_cmd_rescan() {
     pthread_mutex_lock(&g_cfgMtx);
     g_ui.cmdRescan = 1;
@@ -1640,6 +1675,7 @@ const MmdApi* mmd_get_api(void) {
         api_camera_touch,
         api_camera_zoom,
         api_render_tick,
+        api_cmd_init,
     };
     static bool announced = false;
     if (!announced) {

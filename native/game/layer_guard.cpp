@@ -168,7 +168,11 @@ void ensure_once() {
             // 纯 UI 相机（只开 layer 5）不碰：它只负责画界面，
             // 给它补世界层会让模型被 UI 相机再画一遍、盖在界面上。
             if (cur == (1u << 5)) {
-                GLOG("[CAM] cam[%d] 是纯 UI 相机（mask=0x%08X），跳过", i, cur);
+                static bool skipLogged = false;
+                if (!skipLogged) {
+                    skipLogged = true;
+                    GLOG("[CAM] cam[%d] 是纯 UI 相机（mask=0x%08X），跳过（只打一次）", i, cur);
+                }
                 continue;
             }
             uint32_t want = cur | bit;

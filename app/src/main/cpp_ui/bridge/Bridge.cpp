@@ -230,6 +230,11 @@ void SelectModel(const std::string& name) {
     if (Bind()) g_Api->set_model(name.c_str());
 }
 
+void RequestInit() {
+    Shared().pendingCommand = "init";
+    if (Bind() && g_Api->cmd_init) g_Api->cmd_init();
+}
+
 void RequestRescan() {
     Shared().pendingCommand = "rescan";
     if (Bind()) g_Api->cmd_rescan();

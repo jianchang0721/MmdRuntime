@@ -33,7 +33,8 @@ typedef enum {
     MMD_ST_SCAN    = 3,
     MMD_ST_IDLE    = 4,
     MMD_ST_LOAD    = 5,
-    MMD_ST_ACTIVE  = 6
+    MMD_ST_ACTIVE  = 6,
+    MMD_ST_DORMANT = 7   // 睡死：不管游戏进多少场景都不碰 Unity，等 UI 发 cmd_init
 } MmdStage;
 
 // 给 UI 显示用的粗状态
@@ -111,6 +112,12 @@ typedef struct MmdApi {
     // 实测：Java 主线程 tid=724，UnityMain tid=1428，两者不同；
     // GameObject..ctor 能过，Mesh..ctor 直接静默退出。
     void (*render_tick)(void);
+
+    // 初始化：绑 il2cpp + 找 Unity 类 + 扫 SMR。只做准备，不建模型。
+    // 为什么要手动：自动加载会在玩家还没进场景时就去摸 Unity 对象，
+    // 早版本 build-121 实测会把游戏画面搞卡。现在默认睡死（MMD_ST_DORMANT），
+    // 必须玩家自己点「初始化」-> 「加载模型」。
+    void (*cmd_init)(void);
 } MmdApi;
 
 // 唯一导出符号

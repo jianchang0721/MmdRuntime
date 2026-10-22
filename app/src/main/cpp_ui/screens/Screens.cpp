@@ -307,15 +307,23 @@ void DrawOverviewTab(Bridge::BridgeModel& Model) {
     ImGui::Separator();
     ImGui::Spacing();
 
+    // 手动两步：① 初始化（绑 il2cpp + 找类 + 扫 SMR）② 加载模型。
+    // 进游戏默认睡死什么都不做——build-121 的自动加载把游戏画面搞卡过。
     const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-    if (UI::Button("重扫 SMR", ImVec2(half, 0.0f))) {
-        Bridge::RequestRescan();
-        Toast::Info("已请求重新扫描 SMR");
+    if (UI::Button("① 初始化", ImVec2(half, 0.0f))) {
+        Bridge::RequestInit();
+        Toast::Info("已请求初始化：绑 il2cpp + 扫 SMR");
     }
     ImGui::SameLine();
-    if (UI::Button("重新套用", ImVec2(half, 0.0f))) {
+    if (UI::Button("② 加载模型", ImVec2(half, 0.0f))) {
         Bridge::RequestReapply();
-        Toast::Info("已请求重新套用");
+        Toast::Info("已请求加载模型");
+    }
+
+    ImGui::Spacing();
+    if (UI::Button("重扫 SMR", ImVec2(-1.0f, 0.0f))) {
+        Bridge::RequestRescan();
+        Toast::Info("已请求重新扫描 SMR");
     }
 }
 

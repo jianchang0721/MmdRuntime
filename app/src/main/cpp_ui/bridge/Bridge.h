@@ -92,6 +92,7 @@ void SetModelPath(const std::string& value);
 void SetShowBounds(bool value);
 void SetManualOffset(float x, float y, float z);
 void SelectModel(const std::string& name);
+void RequestInit();    // 初始化：绑 il2cpp + 扫 SMR，不建模型
 void RequestRescan();
 void RequestReapply();
 void ImportModelsFromConfig();
