@@ -15,6 +15,7 @@ project(mmdruntime CXX)
 
 add_library(mmdruntime SHARED
     module.cpp
+    crash_report.cpp
     bone_hook.cpp
     mmd/pmx.cpp
     mmd/skeleton.cpp

@@ -47,6 +47,7 @@
 #include "game/loader.h"
 #include "game/self_smr.h"
 #include "game/layer_guard.h"
+#include "crash_report.h"
 #include <dirent.h>
 #include <strings.h>
 #include "unity/il2cpp_api.h"
@@ -1745,6 +1746,14 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
     // 然后把 /proc 里我们的痕迹盖掉。越早装越安全——
     // 游戏侧反作弊可能在任何时刻扫 maps，晚一秒就多一秒空窗期。
     stealth::Install();
+
+    // 自己的崩溃现场记录：游戏的 libnpth_wrapper 抢了信号链，
+    // tombstone 写不出来，只能自己接 SIGSEGV。
+    pick_dir();
+    {
+        std::string lp = g_dir + "/mmdruntime.log";
+        crash_report::install(lp.c_str());
+    }
 
     pthread_t t;
     if (pthread_create(&t, nullptr, worker, nullptr) == 0) pthread_detach(t);
