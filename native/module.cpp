@@ -575,20 +575,25 @@ static void dump_smrs() {
     // 顺带装 Object.get_name 的 hook，抓「谁在读名字」的调用点，
     // 用来反查游戏内部的骨骼查找函数（LR 偏移可直接固化成基址定位）。
     {
-        int idx = -1;
-        for (size_t i = 0; i < g_smrs.size(); i++) {
-            if (g_smrs[i].obj && g_smrs[i].boneCount >= 40) { idx = (int)i; break; }
-        }
-        if (idx >= 0) {
+        // 只挑名字带 Body 的（之前取第一个 boneCount>=40，结果抓到的是 Face SMR，
+        // 打出来全是 bone_yanjing / bone_zuiba 这些嘴眼骨，躯干那套 BN_* 一条没有）
+        int dumped = 0;
+        for (size_t i = 0; i < g_smrs.size() && dumped < 3; i++) {
+            if (!g_smrs[i].obj) continue;
+            if (g_smrs[i].boneCount < 40) continue;
+            if (g_smrs[i].name.find("Body") == std::string::npos) continue;
+
             std::vector<game::BoneNameEntry> names;
-            if (game::collect_bone_names(g_smrs[idx].obj, names)) {
-                L("[BONENAME] SMR #%d '%s' bones=%zu", idx,
-                  g_smrs[idx].name.c_str(), names.size());
+            if (game::collect_bone_names(g_smrs[i].obj, names)) {
+                L("[BONENAME] SMR #%zu '%s' bones=%zu", i,
+                  g_smrs[i].name.c_str(), names.size());
                 game::dump_bone_names(names, 160);   // 全量打，翻译层要靠名字做映射
+                dumped++;
             }
-            if (!game::name_hook_installed()) {
-                game::install_name_hook(64);
-            }
+        }
+        if (!dumped) L("[BONENAME] 没找到名字带 Body 的 SMR（g_smrs=%zu）", g_smrs.size());
+        if (!game::name_hook_installed()) {
+            game::install_name_hook(64);
         }
     }
 
