@@ -159,11 +159,18 @@ void handler(int sig, siginfo_t* si, void* uc_) {
         fp = nfp;
     }
 
-    // 恢复默认处理再把自己打死，不掩盖真实崩溃
+    // 恢复默认处理再把自己打死。
+    // 坑：handler 运行期间同号信号是被屏蔽的，不解屏蔽的话 tgkill 只会
+    // 把它挂成 pending，进程不死、卡在下面的循环里——10-22 实测就是这个导致
+    // 游戏「死锁」（不是真死锁，是崩在 handler 里出不来）。
     signal(sig, SIG_DFL);
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, sig);
+    sigprocmask(SIG_UNBLOCK, &set, nullptr);
     (void)syscall(__NR_tgkill, (int)syscall(__NR_getpid), (int)syscall(__NR_gettid), sig);
-    // aarch64 没有 pause，用 getpid 空转兜底（tgkill 正常时根本走不到这）
-    for (;;) (void)syscall(__NR_getpid);
+    // 实在没死就自己走，别把整个进程拖成僵尸
+    (void)syscall(__NR_exit_group, 128 + sig);
 }
 
 }  // namespace

@@ -8,6 +8,8 @@
 #include <cstdarg>
 #include <cstdio>
 #include <vector>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "bone_hook.h"
 #include "self_smr.h"
@@ -226,10 +228,54 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         LLOG("[LOADER] materials: %zu 有效 / %zu 原始 (submesh=%d)",
              matsOk.size(), mats.items.size(), bm.subMeshes);
 
+        // ===== 诊断二分开关（文件：游戏私有目录/mmd_diag，内容 1~3）=====
+        //   1 = 用游戏原角色的 mesh + 原角色的材质（完全不用我们的）
+        //   2 = 我们的 mesh + 原角色的材质
+        //   3 = 原角色的 mesh + 我们的材质
+        // 目的：崩溃在 libunity 渲染命令流里（ldrb [x20]，野指针），
+        // 先分清是「我们建的网格」还是「我们建的材质」把命令流喂坏了。
+        void* useMesh = bm.mesh;
+        std::vector<void*> useMats = matsOk;
+        int diag = 0;
+        {
+            int fd = open("/data/data/com.hermes.h1game/files/mmd_diag", O_RDONLY);
+            if (fd >= 0) {
+                char c = 0;
+                if (read(fd, &c, 1) == 1 && c >= '1' && c <= '3') diag = c - '0';
+                close(fd);
+            }
+        }
+        if (diag) {
+            LLOG("[DIAG] mode=%d（1=refmesh+refmat 2=ourmesh+refmat 3=refmesh+ourmat）", diag);
+            if (diag == 1 || diag == 3) {
+                void* smrCls = uo::u_class("UnityEngine", "SkinnedMeshRenderer");
+                void* mGetMesh = smrCls ? uo::u_method(smrCls, "get_sharedMesh", 0) : nullptr;
+                void* rm = mGetMesh ? uo::u_call(smr.managed, mGetMesh, nullptr) : nullptr;
+                if (rm) { useMesh = rm; LLOG("[DIAG] mesh <- ref %p", rm); }
+                else    LLOG("[DIAG] ref mesh 拿不到，保持我们的");
+            }
+            if (diag == 1 || diag == 2) {
+                void* rCls = uo::u_class("UnityEngine", "Renderer");
+                void* mGetMats = rCls ? uo::u_method(rCls, "get_sharedMaterials", 0) : nullptr;
+                void* arr = mGetMats ? uo::u_call(smr.managed, mGetMats, nullptr) : nullptr;
+                if (arr) {
+                    int32_t n = *(int32_t*)((char*)arr + 24);
+                    if (n > 0 && n <= 64) {
+                        useMats.clear();
+                        for (int i = 0; i < n; i++)
+                            useMats.push_back(*(void**)((char*)arr + 32 + (size_t)i * 8));
+                        LLOG("[DIAG] materials <- ref x%d", n);
+                    }
+                } else {
+                    LLOG("[DIAG] ref materials 拿不到，保持我们的");
+                }
+            }
+        }
+
         game::SelfSmr self;
-        if (game::create_self_mesh_renderer(modelRoot, smr.managed, bm.mesh,
-                                            matsOk.empty() ? nullptr : matsOk.data(),
-                                            (int)matsOk.size(), self)) {
+        if (game::create_self_mesh_renderer(modelRoot, smr.managed, useMesh,
+                                            useMats.empty() ? nullptr : useMats.data(),
+                                            (int)useMats.size(), self)) {
             out.mesh      = bm.mesh;
             out.verts     = bm.vertexCount;
             out.tris      = bm.indexCount / 3;
