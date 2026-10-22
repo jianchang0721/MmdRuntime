@@ -151,6 +151,20 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     mmd::load_textures(model, pmxPath, tex, logf_cb);
     out.textures = tex.loaded;
 
+    // 贴图必须钉住：材质里存的是 native PPtr，Texture2D 被 GC 收掉后
+    // native 纹理就释放了，渲染线程下一帧解引用直接 SIGSEGV。
+    // build-121 实测：MeshRenderer 真渲染之后，加载完 5~20 秒必崩（SIGSEGV），
+    // 旧版 SMR 不渲染所以从没踩到——这是真渲染之后才暴露的悬空引用。
+    if (g_api.gchandle_new) {
+        int pinned = 0;
+        for (void* tp : tex.items) {
+            if (!tp) continue;
+            uint32_t h = g_api.gchandle_new((Il2CppObject*)tp, true);
+            if (h) { out.pinHandles.push_back(h); pinned++; }
+        }
+        LLOG("[LOADER] textures pinned: %d / %zu", pinned, tex.items.size());
+    }
+
     // 大块分配到此结束（Mesh 21804 顶点 + 8 张贴图 16MB 数组）。
     // 赶紧把 GC 放回去，否则后面的 Shader.Find / Material..ctor 必死锁。
     gcGuard.enable_now();
