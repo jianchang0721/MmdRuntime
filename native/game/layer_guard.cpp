@@ -86,6 +86,65 @@ void dump_camera_once(void* cam, int idx) {
 
 }  // namespace
 
+// 读一台相机的 cullingMask。优先 Camera.main，拿不到用 allCameras[0]。
+static uint32_t main_camera_mask(bool* ok) {
+    if (ok) *ok = false;
+    void* camCls = uo::u_class("UnityEngine", "Camera");
+    if (!camCls) return 0;
+    void* mMask = uo::u_method(camCls, "get_cullingMask", 0);
+    if (!mMask) return 0;
+
+    void* cam = nullptr;
+    void* mMain = uo::u_method(camCls, "get_main", 0);
+    if (mMain) cam = uo::u_call(nullptr, mMain, nullptr);
+    if (!cam) {
+        void* mAll = uo::u_method(camCls, "get_allCameras", 0);
+        void* arr = mAll ? uo::u_call(nullptr, mAll, nullptr) : nullptr;
+        if (arr && *(int32_t*)((char*)arr + 24) > 0)
+            cam = *(void**)((char*)arr + 32);
+    }
+    if (!cam) return 0;
+
+    void* r = uo::u_call(cam, mMask, nullptr);
+    if (!r) return 0;
+    if (ok) *ok = true;
+    return *(uint32_t*)((char*)r + 16);
+}
+
+// 选一个「主相机真看得见」的层。
+//
+// 为什么不能直接抄角色层：实测这局角色在 layer 23，主相机 mask=0xFB7BFF57
+// 里根本没 bit23，而且游戏每 2 秒就把 mask 改回去（ensure_once 补了又被覆盖），
+// 结果模型永远 isVisible=0。抢 mask 抢不过，就换个本来就开着的层。
+static int pick_visible_layer(int want) {
+    bool ok = false;
+    uint32_t mask = main_camera_mask(&ok);
+    if (!ok) {
+        GLOG("[LAYER] 读不到主相机 mask，直接用角色层 %d", want);
+        return want;
+    }
+    if (want >= 0 && want < 32 && (mask & (1u << want))) {
+        GLOG("[LAYER] 角色层 %d 已在主相机 mask 0x%08X 里，直接用", want, mask);
+        return want;
+    }
+    // 偏好：10/0/8/9… 这些是常见角色/默认层，光照和遮挡行为最接近角色
+    static const int pref[] = { 10, 0, 8, 9, 11, 12, 13, 6, 5, 4, 2, 1 };
+    for (int i = 0; i < (int)(sizeof(pref) / sizeof(pref[0])); i++) {
+        int L = pref[i];
+        if (mask & (1u << L)) {
+            GLOG("[LAYER] 角色层 %d 不在主相机 mask 0x%08X，改用 %d", want, mask, L);
+            return L;
+        }
+    }
+    for (int L = 0; L < 32; L++) {
+        if (mask & (1u << L)) {
+            GLOG("[LAYER] 角色层 %d 不可见，兜底用 mask 里第一个置位层 %d", want, L);
+            return L;
+        }
+    }
+    return want;
+}
+
 int apply(void* go, void* sourceSmr) {
     if (!go) { GLOG("[LAYER] apply: go 为空"); return -1; }
 
@@ -103,13 +162,15 @@ int apply(void* go, void* sourceSmr) {
         return -1;
     }
 
+    const int use = pick_visible_layer(want);
+
     int before = read_layer(go);
-    bool called = write_layer(go, want);
+    bool called = write_layer(go, use);
     int after = read_layer(go);
 
     GLOG("[LAYER] model GO=%p layer %d -> %d (setLayer调用=%d 读回=%d)%s",
-         go, before, want, (int)called, after,
-         (after == want) ? "  OK" : "  <-- 写入没生效！");
+         go, before, use, (int)called, after,
+         (after == use) ? "  OK" : "  <-- 写入没生效！");
 
     register_model(go, after >= 0 ? after : want);
     return after;
