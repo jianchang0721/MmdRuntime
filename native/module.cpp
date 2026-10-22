@@ -719,7 +719,14 @@ static void census_and_anchor() {
     }
 
     if (best < 0) {
-        L("[CENSUS] 没有候选（SMR=%zu）", g_smrs.size());
+        L("[CENSUS] no candidate (SMR=%zu)", g_smrs.size());
+        return;
+    }
+    // Score gate: a pooled/inactive scene scores < 25. Require 60 so we never
+    // anchor onto a dummy object again (build-145 picked a random Body at 25).
+    if (bestScore < 60) {
+        L("[CENSUS] best score %d < 60 -> scene has no active player, skip anchor "
+          "(enter battle/lobby with your character visible, then re-run)", bestScore);
         return;
     }
 
@@ -750,6 +757,127 @@ static void census_and_anchor() {
         g_anchorBones.push_back(b);
     }
     L("[ANCHOR] 完成：%zu 根骨骼已钉住", g_anchorBones.size());
+}
+
+// =====================================================================
+// Retarget: copy game bone world rotations onto our own MMD bones.
+// Same idea as ModelReplacementAPI (boneMap + rotation copy + per-bone offset).
+// Table order must be top-down (parent before child) because setting a
+// parent's world rotation moves its children.
+// =====================================================================
+struct RetargetPair { int game; int mmd; const char* g; const char* m; };
+static std::vector<RetargetPair> g_pairs;
+
+// g_model / g_load are defined further down; access through forward-declared getters.
+static mmd::Model& model_ref();
+static game::LoadResult& load_ref();
+static int g_rtCenterGame = -1;   // Bip001 Pelvis
+static int g_rtCenterMmd  = -1;   // center bone for position follow
+
+// MMD names are written as UTF-8 hex escapes so this file stays pure ASCII.
+static const struct { const char* g; const char* m; } kRetargetMap[] = {
+    { "Bip001 Pelvis",    "\xE4\xB8\x8B\xE5\x8D\x8A\xE8\xBA\xAB" },              // lower body
+    { "Bip001 Spine",     "\xE4\xB8\x8A\xE5\x8D\x8A\xE8\xBA\xAB" },              // upper body
+    { "Bip001 Spine1",    "\xE4\xB8\x8A\xE5\x8D\x8A\xE8\xBA\xAB" "2" },           // upper body 2
+    { "Bip001 Neck",      "\xE9\xA6\x96" },                                        // neck
+    { "Bip001 Head",      "\xE9\xA0\xAD" },                                        // head
+    { "Bip001 L Clavicle","\xE5\xB7\xA6\xE8\x82\xA9" },                          // L shoulder
+    { "Bip001 R Clavicle","\xE5\x8F\xB3\xE8\x82\xA9" },                          // R shoulder
+    { "Bip001 L UpperArm","\xE5\xB7\xA6\xE8\x85\x95" },                          // L arm
+    { "Bip001 R UpperArm","\xE5\x8F\xB3\xE8\x85\x95" },                          // R arm
+    { "Bip001 L Forearm", "\xE5\xB7\xA6\xE3\x81\xB2\xE3\x81\x98" },             // L elbow
+    { "Bip001 R Forearm", "\xE5\x8F\xB3\xE3\x81\xB2\xE3\x81\x98" },             // R elbow
+    { "Bip001 L Hand",    "\xE5\xB7\xA6\xE6\x89\x8B\xE9\xA6\x96" },             // L wrist
+    { "Bip001 R Hand",    "\xE5\x8F\xB3\xE6\x89\x8B\xE9\xA6\x96" },             // R wrist
+    { "Bip001 L Thigh",   "\xE5\xB7\xA6\xE8\xB6\xB3" },                          // L leg
+    { "Bip001 R Thigh",   "\xE5\x8F\xB3\xE8\xB6\xB3" },                          // R leg
+    { "Bip001 L Calf",    "\xE5\xB7\xA6\xE3\x81\xB2\xE3\x81\x96" },             // L knee
+    { "Bip001 R Calf",    "\xE5\x8F\xB3\xE3\x81\xB2\xE3\x81\x96" },             // R knee
+    { "Bip001 L Foot",    "\xE5\xB7\xA6\xE8\xB6\xB3\xE9\xA6\x96" },             // L ankle
+    { "Bip001 R Foot",    "\xE5\x8F\xB3\xE8\xB6\xB3\xE9\xA6\x96" },             // R ankle
+    { "Bip001 L Toe0",    "\xE5\xB7\xA6\xE3\x81\xA4\xE3\x81\xBE\xE5\x85\x88" },// L toe
+    { "Bip001 R Toe0",    "\xE5\x8F\xB3\xE3\x81\xA4\xE3\x81\xBE\xE5\x85\x88" },// R toe
+};
+
+static int find_anchor_by_name(const char* n) {
+    for (size_t i = 0; i < g_anchorBones.size(); i++)
+        if (strcmp(g_anchorBones[i].name, n) == 0) return (int)i;
+    return -1;
+}
+static int find_mmd_bone_by_name(const char* n) {
+    mmd::Model& m = model_ref();
+    for (size_t i = 0; i < m.bones.size(); i++)
+        if (m.bones[i].name == n) return (int)i;
+    return -1;
+}
+
+static void build_retarget() {
+    g_pairs.clear();
+    g_rtCenterGame = g_rtCenterMmd = -1;
+    if (g_anchorBones.empty()) { L("[RT] no anchored game bones yet"); return; }
+    if (model_ref().bones.empty()) { L("[RT] model bones not parsed yet"); return; }
+
+    int ok = 0, missG = 0, missM = 0;
+    for (size_t i = 0; i < sizeof(kRetargetMap) / sizeof(kRetargetMap[0]); i++) {
+        int gi = find_anchor_by_name(kRetargetMap[i].g);
+        int mi = find_mmd_bone_by_name(kRetargetMap[i].m);
+        if (gi < 0) { missG++; continue; }
+        if (mi < 0) { missM++; L("[RT] mmd bone missing: %s", kRetargetMap[i].m); continue; }
+        g_pairs.push_back({gi, mi, kRetargetMap[i].g, kRetargetMap[i].m});
+        ok++;
+    }
+    g_rtCenterGame = find_anchor_by_name("Bip001 Pelvis");
+    g_rtCenterMmd  = find_mmd_bone_by_name("\xE3\x82\xBB\xE3\x83\xB3\xE3\x82\xBF\xE3\x83\xBC"); // center
+    L("[RT] map built: %d pairs (game missing %d, mmd missing %d) centerG=%d centerM=%d",
+      ok, missG, missM, g_rtCenterGame, g_rtCenterMmd);
+}
+
+static void retarget_update() {
+    if (g_pairs.empty() || !load_ref().ok) return;
+    Il2CppClass* trCls = find_class_any("UnityEngine", "Transform");
+    if (!trCls) return;
+    static const MethodInfo* sGetRot = nullptr;
+    static const MethodInfo* sSetRot = nullptr;
+    static const MethodInfo* sSetPos = nullptr;
+    static const MethodInfo* sGetPos = nullptr;
+    static bool sTried = false;
+    if (!sTried) {
+        sTried = true;
+        sGetRot = find_method_any(trCls, "get_rotation");
+        sSetRot = find_method_any(trCls, "set_rotation");
+        sSetPos = find_method_any(trCls, "set_position");
+        sGetPos = find_method_any(trCls, "get_position");
+        L("[RT] methods getRot=%p setRot=%p getPos=%p setPos=%p",
+          (void*)sGetRot, (void*)sSetRot, (void*)sGetPos, (void*)sSetPos);
+    }
+    if (!sGetRot || !sSetRot) return;
+
+    for (size_t i = 0; i < g_pairs.size(); i++) {
+        void* gt = g_anchorBones[(size_t)g_pairs[i].game].tr;
+        void* mt = load_ref().skeleton.transform_at(g_pairs[i].mmd);
+        if (!gt || !mt) continue;
+        void* q = invoke(sGetRot, gt, nullptr);
+        if (!q) continue;
+        float quat[4];
+        memcpy(quat, (char*)q + 16, sizeof(quat));
+        void* a[1] = { quat };
+        invoke(sSetRot, mt, a);
+    }
+
+    // position follow: put our center bone at the game pelvis position
+    if (sGetPos && sSetPos && g_rtCenterGame >= 0 && g_rtCenterMmd >= 0) {
+        void* gt = g_anchorBones[(size_t)g_rtCenterGame].tr;
+        void* mt = load_ref().skeleton.transform_at(g_rtCenterMmd);
+        if (gt && mt) {
+            void* p = invoke(sGetPos, gt, nullptr);
+            if (p) {
+                float v[3];
+                memcpy(v, (char*)p + 16, sizeof(v));
+                void* a[1] = { v };
+                invoke(sSetPos, mt, a);
+            }
+        }
+    }
 }
 
 static void dump_smrs() {
@@ -1088,6 +1216,8 @@ static MmdStatus g_stat;      // 最近一帧的状态快照（给 mmd_get_api �
 static int       g_statVer = 0;
 static game::LoadResult  g_load;       // 最近一次加载结果
 static mmd::Model        g_model;      // 解析出来的模型（常驻，别重复解析）
+static mmd::Model& model_ref() { return g_model; }
+static game::LoadResult& load_ref() { return g_load; }
 static bool              g_modelLoaded = false;
 static volatile int      g_forceReparse = 0;   // API 置位，主线程消费
 static int               g_lastSmrIndex = -1;
@@ -1301,6 +1431,7 @@ static bool do_load_model() {
     }
 
     g_lastSmrIndex = idx;
+    build_retarget();   // mapping is ready only after both anchor + model exist
     L("[LOAD] 成功: bones=%d verts=%d tris=%d submeshes=%d tex=%d mat=%d meshId=%d",
       g_load.bonesBuilt, g_load.verts, g_load.tris,
       g_load.subMeshes, g_load.textures, g_load.materials, g_load.meshId);
@@ -1588,6 +1719,18 @@ static void tick_body() {
 
     // 摄像机：放在状态机之后，保证是渲染前最后一写
     if (game::g_camera.enabled) game::g_camera.update();
+
+    // Re-census trigger: create <gamedir>/mmd_recensus to re-run the census +
+    // anchor at any time (e.g. after entering a battle scene).
+    if (access("/data/data/com.hermes.h1game/files/mmd_recensus", F_OK) == 0) {
+        unlink("/data/data/com.hermes.h1game/files/mmd_recensus");
+        L("[CENSUS] manual trigger (mmd_recensus found)");
+        census_and_anchor();
+        build_retarget();
+    }
+
+    // Drive our own MMD skeleton from the anchored game bones.
+    retarget_update();
 
     // 跨帧观测自建 SMR 的 isVisible / bounds（每 60 帧一次）
     game::probe_self_tick();
