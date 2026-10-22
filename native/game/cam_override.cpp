@@ -175,7 +175,10 @@ bool install() {
     void* pGetMain = method_ptr(camCls, "get_main", 0);
     void* pCompTr  = method_ptr(compCls, "get_transform", 0);
 
-    // ② 写入侧：*_Injected（参数是引用，正好能就地改）
+        // ② 写入侧：*_Injected
+    // ⚠️ 实测（build-155）：这些 icall 钩子装了但一次都不命中——Unity 内部
+    // C++ 调 Transform 走原生直路，不经过 managed icall 层。留着做兜底，
+    // 真正的接管在 cam_write_hook.cpp（hook libunity 原生 Transform 函数）。
     void* pSetPos    = method_ptr(trCls, "set_position_Injected", 1);
     void* pSetRot    = method_ptr(trCls, "set_rotation_Injected", 1);
     void* pSetLPos   = method_ptr(trCls, "set_localPosition_Injected", 1);

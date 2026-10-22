@@ -320,6 +320,25 @@ void update() {
     if (mSetNormals && g_normArr) {
         void* an[1] = { g_normArr };
         uo::u_call_void(g_mesh, mSetNormals, an);
+
+        // 读回验证：法线到底有没有进 mesh（白辉光是否修好的唯一证据）
+        static int verifyBeat = 0;
+        if (++verifyBeat % 300 == 1) {
+            void* mGetNormals = uo::u_method(uo::u_class("UnityEngine", "Mesh"), "get_normals", 0);
+            void* back = mGetNormals ? uo::u_call(g_mesh, mGetNormals, nullptr) : nullptr;
+            if (back) {
+                int32_t n = *(int32_t*)((char*)back + 24);
+                float* v = (float*)((char*)back + 32);
+                const float* want = (float*)uo::u_array_data(g_normArr);
+                const bool same = (n == g_nVerts) && (n > 0) &&
+                    (fabsf(v[0] - want[0]) < 1e-4f) &&
+                    (fabsf(v[(size_t)(n/2)*3+1] - want[(size_t)(n/2)*3+1]) < 1e-4f);
+                SLOG("[SKIN] normals readback: n=%d v[0]=(%.3f,%.3f,%.3f) %s",
+                     n, v[0], v[1], v[2], same ? "MATCH" : "<-- 没进去！");
+            } else {
+                SLOG("[SKIN] normals readback: get_normals 返回 null");
+            }
+        }
     }
 
     g_lastUs = (int)(now_us() - t0);

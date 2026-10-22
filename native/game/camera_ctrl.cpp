@@ -17,6 +17,7 @@
 
 #include "unity/il2cpp_api.h"
 #include "cam_override.h"
+#include "cam_native.h"
 #include "logsink.h"
 #include "unity/unity_objects.h"
 
@@ -184,18 +185,26 @@ static float read_axis(const char* name) {
     return r ? *(float*)((char*)r + 16) : 0.0f;
 }
 
-// ---- 把 cam_override 的钩子挂上（一次）----
-// 老做法的死结：我们在 eglSwapBuffers 里主动 set_position，游戏在 Update 里
-// 也会写相机，谁在后谁赢 —— 多数是游戏赢，于是「UI 动相机不动」。
-// 新做法：hook 写入侧 *_Injected，游戏写相机的那一刻我们改参数。
-static void ensure_cam_hook() {
+// ---- 相机接管：native 直读写 ----
+// build-155 教训：
+//   ① il2cpp_runtime_invoke 调 Transform.get_position 拿回来的 Vector3 是 (0,0,0)
+//      —— 值类型装箱/调用约定在这条路上有坑，别用了。
+//   ② hook Transform.set_position_Injected 装了 7 个一次都不命中 ——
+//      Unity 内部 C++ 调 Transform 走原生直路，不过 managed icall。
+// 所以：managed Object+0x10 = m_CachedPtr，直接读写 native 内存。
+// 偏移靠「读出来的值是否合理」动态探测，不写死。
+static void ensure_cam_native(void* tr) {
     static bool tried = false;
     if (tried) return;
     tried = true;
-    if (cam_override::install())
-        CLOG("[CAM] write-side hooks installed (game writes will be overridden)");
-    else
-        CLOG("[CAM] write-side hooks FAILED, falling back to active writes");
+    void* nat = cam_native::attach(tr);
+    float p[3] = {0, 0, 0};
+    if (nat && cam_native::get_world_pos(tr, p)) {
+        CLOG("[CAM] native pos=(%.2f, %.2f, %.2f) off=0x%x",
+             p[0], p[1], p[2], cam_native::off_pos());
+    } else {
+        CLOG("[CAM] native pos read FAILED (nat=%p)", nat);
+    }
 }
 
 // =====================================================================
@@ -203,18 +212,21 @@ static void ensure_cam_hook() {
 // =====================================================================
 void CameraCtrl::update() {
     if (!enabled || !transform || !g_refsReady) return;
-    ensure_cam_hook();
+    ensure_cam_native(transform);
 
     // ---- 灵魂出窍：本体不动，摇杆推着相机飞 ----
     if (freeFly) {
         // 首次启用：把 camPos 对齐到相机当前世界坐标，避免瞬移
-        if (camPos[0] == 0.0f && camPos[1] == 0.0f && camPos[2] == 0.0f && g_getPos) {
-            void* r = uo::u_call(transform, g_getPos, nullptr);
-            if (r) {
-                float* p = (float*)((char*)r + 16);
+        // 用 native 直读（managed get_position 读回来是 0，build-155 实测）
+        if (camPos[0] == 0.0f && camPos[1] == 0.0f && camPos[2] == 0.0f) {
+            float p[3] = {0, 0, 0};
+            if (cam_native::get_world_pos(transform, p)) {
                 camPos[0] = p[0]; camPos[1] = p[1]; camPos[2] = p[2];
                 CLOG("[CAM] freeFly start pos=(%.2f, %.2f, %.2f)",
                      camPos[0], camPos[1], camPos[2]);
+            } else {
+                CLOG("[CAM] freeFly start FAILED, fallback (0,30,0)");
+                camPos[0] = 0.0f; camPos[1] = 30.0f; camPos[2] = 0.0f;
             }
         }
 
@@ -227,9 +239,8 @@ void CameraCtrl::update() {
         camPos[0] += (v * syw + h * cyw) * flySpeed * dt;
         camPos[2] += (v * cyw - h * syw) * flySpeed * dt;
 
-        struct { float x, y, z; } pos = { camPos[0], camPos[1], camPos[2] };
-        void* a1[1] = { &pos };
-        uo::u_call_void(transform, g_setPos, a1);
+        // native 直写：绕开 managed setter
+        cam_native::set_world_pos(transform, camPos);
 
         // 朝向：yaw/pitch（右半屏拖动改这两个值）
         const float halfP = pitch * 0.5f;
@@ -249,9 +260,8 @@ void CameraCtrl::update() {
             uo::u_call_void(camera, g_setFov, a3);
         }
 
-        // 把期望姿态交给写入侧 hook：游戏下次写相机时会自动带上我们的值
-    if (cam_override::captured())
-        cam_override::set_desired_pose(camPos, q);
+    // native 直写旋转
+    cam_native::set_world_rot(transform, q);
 
     // 每 60 帧打一次摇杆值，确认游戏摇杆真的映射到这两个轴
         static int flyBeat = 0;
