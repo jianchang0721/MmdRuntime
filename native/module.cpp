@@ -706,10 +706,19 @@ static void census_and_anchor() {
         if (active) score += 10;
         if (s.boneCount >= 40) score += 10;
         if (shareAnc) score += 100;
-        // Unity view space: forward is NEGATIVE z. Build-147 logged sane
-        // objects at cz=-7.33 and garbage ones at cz=-4186, and the old
-        // "cz > 1 && cz < 8" test could never be true.
-        if (fabsf(cx) < 2.5f && cz < -1.0f && cz > -12.0f) score += 60;
+        // Unity view space: forward is NEGATIVE z. Build-147/150 proved that a
+        // plain boolean test is useless -- #3 Body scored 60 without ever being
+        // in front of the camera. Score by distance instead: the character the
+        // camera follows is the nearest one in front.
+        if (cz < -0.5f) {
+            const float d = -cz;
+            int bonus = (int)(400.0f - d * 12.0f);
+            if (bonus < 5) bonus = 5;
+            score += bonus;
+        } else {
+            score -= 50;   // behind the camera
+        }
+        if (fabsf(cx) < 4.0f) score += 20;
         if (sx >= 0 && pixW > 0 && pixH > 0) {
             const float u = sx / (float)pixW, v = sy / (float)pixH;
             if (u > 0.30f && u < 0.70f && v > 0.10f && v < 0.55f) score += 20;
