@@ -673,7 +673,7 @@ static void census_and_anchor() {
         // 屏幕投影先关掉：build-143 实测这一步（值类型 Vector3 传参）很可能就是崩溃点，
         // 而它对“锁玩家”不是必需信号（父链交集已经足够决定性）。
         float sx = -1, sy = -1, sz = 0;
-        if (false && cam && mW2S && p) {
+        (void)cam; (void)mW2S; (void)sz;
 
         // 激活
         bool active = true;
