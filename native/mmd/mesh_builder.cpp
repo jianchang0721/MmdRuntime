@@ -485,12 +485,21 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
         MLOG("[MESH] set_bindposes missing or no bones");
     }
 
-    // ---- 8) 不调 UploadMeshData ----
-    // 实测（2026-10-22 frida + /proc/mem）：调了 UploadMeshData(true) 之后
-    // mesh native 的顶点缓冲区被标记为空、SMR 的 +0x1d8 建不出来、
-    // get_bounds() 返回 0、isVisible 即使为 1 也不渲染。
-    // ModelMod 的 spawn_model_object（真的显示出来的那份）没有这一步。
-    MLOG("[MESH] step8/8 UploadMeshData skipped (会导致顶点缓冲被清空)");
+    // ---- 8) UploadMeshData(false) ----
+    // 实测（2026-10-22 frida + /proc/mem）：
+    //   · UploadMeshData(true)  → mesh native 顶点缓冲被标记为空、
+    //     SMR 的 +0x1d8 建不出来、get_bounds() 返回 0、isVisible=1 也不渲染
+    //   · 完全不调              → Unity 渲染时踩不完整的 mesh，加载成功后静默退出（无 tombstone）
+    //   · UploadMeshData(false) → 上传 GPU 后释放 CPU 副本，GPU 缓冲完整（ModelMod test4 用法）
+    MLOG("[MESH] step8/8 UploadMeshData(false)...");
+    if (mc.mUpload) {
+        uint8_t keepReadable = 0;   // false：上传后释放 CPU 副本
+        void* a[1] = { &keepReadable };
+        uo::u_call_void(mesh, mc.mUpload, a);
+        MLOG("[MESH] step8/8 UploadMeshData(false) done");
+    } else {
+        MLOG("[MESH] step8/8 UploadMeshData missing (mesh 可能不完整)");
+    }
 
     out.mesh = mesh;
     out.vertexCount = (int)nv;
