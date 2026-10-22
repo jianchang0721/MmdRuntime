@@ -1316,6 +1316,16 @@ static std::string find_pmx_path() {
 // 骨骼更多，结果模型被挂到了对面角色身上（用户实测）。
 // 玩家角色永远离相机最近，改按距离选（ModelMod v92 也是这么做的）。
 static int pick_target_smr() {
+    // The census already identified the player character; attach the model to
+    // that exact SMR instead of re-guessing by distance (build-147 attached
+    // the model to the opponent because this function had its own logic).
+    if (g_anchorIdx >= 0 && g_anchorIdx < (int)g_smrs.size() &&
+        g_smrs[(size_t)g_anchorIdx].obj) {
+        L("[PICK] use anchored player #%d '%s' bones=%d", g_anchorIdx,
+          g_smrs[(size_t)g_anchorIdx].name.c_str(), g_smrs[(size_t)g_anchorIdx].boneCount);
+        return g_anchorIdx;
+    }
+
     // 相机位置
     float cam[3] = {0, 0, 0};
     bool haveCam = false;
