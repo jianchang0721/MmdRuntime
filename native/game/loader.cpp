@@ -163,6 +163,40 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     LLOG("[LOADER] mesh verts=%d tris=%d bones=%d submeshes=%d",
          out.verts, out.tris, bm.boneCount, bm.subMeshes);
 
+    // ===== 子网格分段校验（贴图错位的头号嫌疑人）=====
+    // 每段索引算包围盒：腿袜应该在下、首应该在上。
+    // 如果每段的 y 范围都跨整个身体，说明 surfaceCount 分段和索引顺序对不上，
+    // 那就是「每个子网格贴了别人的贴图」的直接原因。
+    {
+        int cursor = 0;
+        const int nfAll = (int)model.faceVertex.size();
+        LLOG("[SUBS] 每段索引的包围盒（mat / tex / 三角数 / y 范围 / x 范围）:");
+        for (size_t i = 0; i < model.materials.size() && i < 32; i++) {
+            const mmd::Material& mt = model.materials[i];
+            int c = (int)mt.surfaceCount;
+            if (c <= 0) { LLOG("[SUBS] mat[%zu] '%s' surf=0 跳过", i, mt.name.c_str()); continue; }
+            const int start = cursor;
+            if (cursor + c > nfAll) c = nfAll - cursor;
+            float ymin = 1e9f, ymax = -1e9f, xmin = 1e9f, xmax = -1e9f;
+            int used = 0;
+            for (int k = 0; k < c; k++) {
+                const int idx = model.faceVertex[(size_t)(start + k)];
+                if (idx < 0 || (size_t)idx >= model.verts.size()) continue;
+                const mmd::Vertex& v = model.verts[(size_t)idx];
+                if (v.pos[1] < ymin) ymin = v.pos[1];
+                if (v.pos[1] > ymax) ymax = v.pos[1];
+                if (v.pos[0] < xmin) xmin = v.pos[0];
+                if (v.pos[0] > xmax) xmax = v.pos[0];
+                used++;
+            }
+            LLOG("[SUBS] mat[%zu] %-10s tex=%2d tris=%5d y=[%6.2f..%6.2f] x=[%6.2f..%6.2f] v=%d",
+                 i, mt.name.c_str(), mt.texIndex, c / 3, ymin, ymax, xmin, xmax, used);
+            cursor += c;
+        }
+        LLOG("[SUBS] 索引总数=%d 游标走到=%d %s", nfAll, cursor,
+             cursor == nfAll ? "(对得上)" : "<-- 对不上！分段算错了");
+    }
+
     // ---- ④b 贴图 + 材质 ----
     const int diagMode = read_diag_mode();
     if (diagMode) LLOG("[DIAG] mode=%d", diagMode);
