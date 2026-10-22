@@ -30,6 +30,7 @@ add_library(mmdruntime SHARED
     game/bone_names.cpp
     game/self_smr.cpp
     game/layer_guard.cpp
+    game/skin_cpu.cpp
     game/loader.cpp
     game/camera_ctrl.cpp
 )

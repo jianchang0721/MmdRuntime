@@ -48,6 +48,7 @@
 #include "game/loader.h"
 #include "game/self_smr.h"
 #include "game/layer_guard.h"
+#include "game/skin_cpu.h"
 #include "crash_report.h"
 #include <dirent.h>
 #include <strings.h>
@@ -910,7 +911,11 @@ static void retarget_update() {
         memcpy(quat, (char*)q + 16, sizeof(quat));
         void* a[1] = { quat };
         invoke(sSetRot, mt, a);
+        game::skin::set_bone_world_rot(g_pairs[i].mmd, quat);   // feed CPU skinning
     }
+
+    // Recompute skinned vertices and upload them to the MeshRenderer mesh.
+    game::skin::update();
 
     // position follow: put our center bone at the game pelvis position
     if (sGetPos && sSetPos && g_rtCenterGame >= 0 && g_rtCenterMmd >= 0) {
@@ -1490,6 +1495,7 @@ static bool do_load_model() {
 
     g_lastSmrIndex = idx;
     build_retarget();   // mapping is ready only after both anchor + model exist
+    game::skin::init(g_model, g_load.mesh);   // CPU skinning arrays + pinned vertex array
     L("[LOAD] 成功: bones=%d verts=%d tris=%d submeshes=%d tex=%d mat=%d meshId=%d",
       g_load.bonesBuilt, g_load.verts, g_load.tris,
       g_load.subMeshes, g_load.textures, g_load.materials, g_load.meshId);
