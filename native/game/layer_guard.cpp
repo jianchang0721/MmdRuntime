@@ -228,6 +228,9 @@ void ensure_once() {
             if (cur & bit) { hit++; continue; }
             // 纯 UI 相机（只开 layer 5）不碰：它只负责画界面，
             // 给它补世界层会让模型被 UI 相机再画一遍、盖在界面上。
+            // mask==0 的相机不碰：那是切场景中途/未初始化的相机，
+            // 给它补层反而会多画东西（实测 build-129：cam[0]=0 被补成 0x400）
+            if (cur == 0) continue;
             if (cur == (1u << 5)) {
                 static bool skipLogged = false;
                 if (!skipLogged) {
@@ -281,9 +284,11 @@ void ensure_once() {
 }
 
 void tick() {
+    // 以前 200ms 一次，实测游戏每 2 秒把 mask 改回去、中间那段就是黑的；
+    // 现在每帧都补（相机就 2~4 个，开销可以忽略）。
     static long long last = 0;
     long long t = now_ms();
-    if (t - last < 200) return;
+    if (t - last < 16) return;
     last = t;
     ensure_once();
 }

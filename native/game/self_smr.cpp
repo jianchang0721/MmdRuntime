@@ -25,6 +25,7 @@ namespace game {
 // 全局保存自建 SMR，给 tick 探针用
 static void* g_selfSmrManaged = nullptr;
 static void* g_selfSmrNative  = nullptr;
+static void* g_selfTr         = nullptr;   // 模型根 Transform（诊断父链用）
 
 namespace {
 
@@ -560,6 +561,7 @@ bool create_self_smr(void* modelTransform,
 
     g_selfSmrManaged = out.smr;
     g_selfSmrNative  = out.native;
+    g_selfTr         = out.tr;
 
     dump_visibility(out, sourceSmr, modelTransform);
     GLOG("[SELF] done: meshId=%d bones=%d mats=%d", meshId, boneCount, matCount);
@@ -692,6 +694,7 @@ bool create_self_mesh_renderer(void* modelTransform, void* sourceSmr, void* mesh
 
     g_selfSmrManaged = mr;
     g_selfSmrNative  = obj_native(mr);
+    g_selfTr         = modelTransform;
 
     GLOG("[MR] OK: go=%p mf=%p mr=%p meshId=%d mats=%d layer=%d",
          go, out.mf, out.mr, uo::instance_id(meshObj), matCount, out.layer);
@@ -721,7 +724,40 @@ void probe_self_tick() {
             bx = b[3]; by = b[4]; bz = b[5];
         }
     }
-    GLOG("[VIS] tick#%d isVisible=%d ext=(%.3f, %.3f, %.3f)", n, vis, bx, by, bz);
+    // 模型根状态：isVisible 一直是 0 的时候，得能分清是「被剔除」还是
+    // 「根节点/父链被禁用」还是「layer 不在相机 mask 里」
+    int goActive = -1, goSelf = -1, goLayer = -1;
+    int parActive = -1, parLayer = -1;
+    {
+        void* goCls = uo::u_class("UnityEngine", "GameObject");
+        void* trCls = uo::u_class("UnityEngine", "Transform");
+        void* compCls = uo::u_class("UnityEngine", "Component");
+        void* mGetGO  = compCls ? uo::u_method(compCls, "get_gameObject", 0) : nullptr;
+        void* mAH     = goCls ? uo::u_method(goCls, "get_activeInHierarchy", 0) : nullptr;
+        void* mAS     = goCls ? uo::u_method(goCls, "get_activeSelf", 0) : nullptr;
+        void* mGL     = goCls ? uo::u_method(goCls, "get_layer", 0) : nullptr;
+        void* mParent = trCls ? uo::u_method(trCls, "get_parent", 0) : nullptr;
+
+        // g_selfSmrManaged 存的是 MeshRenderer；先拿它的 GO
+        void* go = (mGetGO && g_selfSmrManaged) ? uo::u_call(g_selfSmrManaged, mGetGO, nullptr) : nullptr;
+        if (go && mAH) { void* r = uo::u_call(go, mAH, nullptr); if (r) goActive = *(uint8_t*)((char*)r + 16) ? 1 : 0; }
+        if (go && mAS) { void* r = uo::u_call(go, mAS, nullptr); if (r) goSelf   = *(uint8_t*)((char*)r + 16) ? 1 : 0; }
+        if (go && mGL) { void* r = uo::u_call(go, mGL, nullptr); if (r) goLayer  = *(int32_t*)((char*)r + 16); }
+
+        // 父链一层（够了：禁用多半在父级）
+        void* tr = g_selfTr ? g_selfTr : nullptr;
+        if (tr && mParent) {
+            void* p = uo::u_call(tr, mParent, nullptr);
+            if (p) {
+                void* pgo = mGetGO ? uo::u_call(p, mGetGO, nullptr) : nullptr;
+                if (pgo && mAH) { void* r = uo::u_call(pgo, mAH, nullptr); if (r) parActive = *(uint8_t*)((char*)r + 16) ? 1 : 0; }
+                if (pgo && mGL) { void* r = uo::u_call(pgo, mGL, nullptr); if (r) parLayer  = *(int32_t*)((char*)r + 16); }
+            }
+        }
+    }
+
+    GLOG("[VIS] tick#%d isVisible=%d ext=(%.3f, %.3f, %.3f) goActive=%d goSelf=%d goLayer=%d parActive=%d parLayer=%d",
+         n, vis, bx, by, bz, goActive, goSelf, goLayer, parActive, parLayer);
 }
 
 void destroy_self_smr(SelfSmr& s) {
