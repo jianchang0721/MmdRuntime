@@ -10,6 +10,7 @@
 // 两个都没有就只建个纯色贴图，不让整个加载流程挂在这里。
 // =====================================================================
 #include "logsink.h"
+#include <unistd.h>   // access()
 #include "texture.h"
 
 #include <android/log.h>
@@ -219,12 +220,26 @@ bool load_textures(const Model& model,
         }
 
         // 垂直翻转：MMD 贴图左下为原点，Unity 左上
+        // 上下翻转开关：
+        //   Unity 的 SetPixels32/LoadRawTextureData 数据是「从下往上」排的（第一个像素=底行）；
+        //   MMD 是 DirectX 系，UV 原点在左上（v 向下）。
+        //   两种情况到底要不要翻，之前一直没视觉验证过（棋盘格上下对称，验不出来）。
+        //   现在默认「不翻」，想翻就在游戏目录建个 mmd_flip 文件。
+        const bool doFlip = (access("/data/data/com.hermes.h1game/files/mmd_flip", F_OK) == 0);
+        if (logf) logf("[TEX] 翻转=%d (mmd_flip 文件%s)", (int)doFlip, doFlip ? "存在" : "不存在");
+
         std::vector<unsigned char> flipped((size_t)w * (size_t)h * 4);
         const size_t row = (size_t)w * 4;
         for (int y = 0; y < h; y++) {
-            memcpy(flipped.data() + (size_t)y * row,
-                   px + (size_t)(h - 1 - y) * row,
-                   row);
+            if (doFlip) {
+                memcpy(flipped.data() + (size_t)y * row,
+                       px + (size_t)(h - 1 - y) * row,
+                       row);
+            } else {
+                memcpy(flipped.data() + (size_t)y * row,
+                       px + (size_t)y * row,
+                       row);
+            }
         }
         stbi_image_free(px);
 
