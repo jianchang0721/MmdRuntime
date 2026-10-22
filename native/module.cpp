@@ -987,12 +987,30 @@ static int pick_target_smr() {
     const MethodInfo* mGetTr  = find_method_any(g_smrClass, "get_transform");
     const MethodInfo* mPos    = trCls ? find_method_any(trCls, "get_position") : nullptr;
 
+    // 过滤掉「父级没激活」的候选：上一版选中了对象池里的备用角色，
+    // 结果 goActive=0 / parActive=0，模型挂在了一个关掉的角色下面看不见。
+    Il2CppClass* compCls = find_class_any("UnityEngine", "Component");
+    Il2CppClass* goCls   = find_class_any("UnityEngine", "GameObject");
+    const MethodInfo* mCompGetGO = compCls ? find_method_any(compCls, "get_gameObject") : nullptr;
+    const MethodInfo* mActive    = goCls ? find_method_any(goCls, "get_activeInHierarchy") : nullptr;
+
     int   best = -1;
     float bestD2 = 0.0f;
     for (size_t i = 0; i < g_smrs.size(); i++) {
         const SmrInfo& s = g_smrs[i];
         if (s.name.find("Body") == std::string::npos) continue;
         if (s.boneCount < 40) continue;
+
+        // 必须在激活的层级里，否则就是池子里的死对象
+        if (mCompGetGO && mActive) {
+            void* go = invoke(mCompGetGO, s.obj, nullptr);
+            void* r  = go ? invoke(mActive, go, nullptr) : nullptr;
+            const bool act = r ? (*(uint8_t*)((char*)r + 16) != 0) : true;
+            if (!act) {
+                L("[PICK] #%zu '%s' 父级未激活，跳过", i, s.name.c_str());
+                continue;
+            }
+        }
 
         float d2 = 0.0f;
         bool have = false;
