@@ -553,6 +553,197 @@ static bool scan_smrs() {
     return !g_smrs.empty();
 }
 
+// =====================================================================
+// 全场景骨骼普查 + 玩家锚定
+//
+// 三个信号（加权）：
+//   ① 相机空间坐标 —— 玩家在 |x|<1.5、z 3..8 的窄带里，而且是常量
+//   ② 父链交集 —— 相机和候选共享祖先（第三人称相机挂在角色下）→ 决定性
+//   ③ 屏幕投影 —— 玩家稳定落在画面中下方
+//
+// 所有候选都打一行，锁错了能一眼看出是哪一步判错。
+// 锁定后把骨骼 Transform 全部 gchandle 钉住（锚点），翻译层直接用。
+// =====================================================================
+struct AnchorBone {
+    void*    tr     = nullptr;   // Il2CppObject* Transform
+    uint32_t handle = 0;         // gchandle（钉住，防 GC）
+    int32_t  id     = 0;
+    char     name[64] = {0};
+};
+
+static std::vector<AnchorBone> g_anchorBones;
+static void* g_anchorSmr   = nullptr;
+static int   g_anchorIdx   = -1;
+static int   g_anchorScore = 0;
+
+static void read_name(void* obj, const MethodInfo* mGetName, char* out, int cap) {
+    out[0] = 0;
+    if (!obj || !mGetName) return;
+    void* s = invoke(mGetName, obj, nullptr);
+    if (!s) return;
+    int32_t len = *(int32_t*)((char*)s + 16);
+    if (len < 0 || len > 256) return;
+    const uint16_t* ch = (const uint16_t*)((char*)s + 20);
+    int n = 0;
+    for (int32_t i = 0; i < len && n < cap - 1; i++)
+        out[n++] = (ch[i] < 0x80) ? (char)ch[i] : '?';
+    out[n] = 0;
+}
+
+static float vec3_get(void* boxed, int idx) {
+    if (!boxed) return 0.0f;
+    return ((float*)((char*)boxed + 16))[idx];
+}
+
+static void census_and_anchor() {
+    Il2CppClass* trCls   = find_class_any("UnityEngine", "Transform");
+    Il2CppClass* objCls  = find_class_any("UnityEngine", "Object");
+    Il2CppClass* compCls = find_class_any("UnityEngine", "Component");
+    Il2CppClass* goCls   = find_class_any("UnityEngine", "GameObject");
+    Il2CppClass* camCls  = find_class_any("UnityEngine", "Camera");
+
+    const MethodInfo* mBones  = find_method_any(g_smrClass, "get_bones");
+    const MethodInfo* mName   = objCls  ? find_method_any(objCls, "get_name") : nullptr;
+    const MethodInfo* mGetTr  = compCls ? find_method_any(compCls, "get_transform") : nullptr;
+    const MethodInfo* mGetGO  = compCls ? find_method_any(compCls, "get_gameObject") : nullptr;
+    const MethodInfo* mPos    = trCls   ? find_method_any(trCls, "get_position") : nullptr;
+    const MethodInfo* mParent = trCls   ? find_method_any(trCls, "get_parent") : nullptr;
+    const MethodInfo* mId     = objCls  ? find_method_any(objCls, "GetInstanceID") : nullptr;
+    const MethodInfo* mW2C    = camCls  ? find_method_any(camCls, "get_worldToCameraMatrix") : nullptr;
+    const MethodInfo* mW2S    = camCls  ? find_method_any(camCls, "WorldToScreenPoint") : nullptr;
+    const MethodInfo* mPixW   = camCls  ? find_method_any(camCls, "get_pixelWidth") : nullptr;
+    const MethodInfo* mPixH   = camCls  ? find_method_any(camCls, "get_pixelHeight") : nullptr;
+    const MethodInfo* mActive = goCls   ? find_method_any(goCls, "get_activeInHierarchy") : nullptr;
+    const MethodInfo* mMain   = camCls  ? find_method_any(camCls, "get_main") : nullptr;
+
+    L("[CENSUS] 开始：SMR=%zu  依赖 bones=%p name=%p pos=%p w2c=%p w2s=%p",
+      g_smrs.size(), (void*)mBones, (void*)mName, (void*)mPos, (void*)mW2C, (void*)mW2S);
+
+    // ---- 相机 ----
+    void* cam = mMain ? invoke(mMain, nullptr, nullptr) : nullptr;
+    void* camTr = (cam && mGetTr) ? invoke(mGetTr, cam, nullptr) : nullptr;
+
+    float view[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    if (cam && mW2C) {
+        void* r = invoke(mW2C, cam, nullptr);
+        if (r) memcpy(view, (char*)r + 16, 16 * sizeof(float));
+    }
+    int pixW = 1920, pixH = 1080;
+    if (cam && mPixW) { void* r = invoke(mPixW, cam, nullptr); if (r) pixW = *(int32_t*)((char*)r + 16); }
+    if (cam && mPixH) { void* r = invoke(mPixH, cam, nullptr); if (r) pixH = *(int32_t*)((char*)r + 16); }
+
+    // 相机祖先链（含自己，往上 10 层）
+    int32_t camChain[12] = {0};
+    int camChainN = 0;
+    {
+        void* t = camTr;
+        for (int i = 0; i < 12 && t; i++) {
+            void* r = mId ? invoke(mId, t, nullptr) : nullptr;
+            camChain[camChainN++] = r ? *(int32_t*)((char*)r + 16) : 0;
+            t = mParent ? invoke(mParent, t, nullptr) : nullptr;
+        }
+    }
+    L("[CENSUS] 相机 tr=%p 祖先链 %d 层", camTr, camChainN);
+
+    // ---- 遍历所有 SMR ----
+    int best = -1, bestScore = 0;
+    for (size_t i = 0; i < g_smrs.size(); i++) {
+        SmrInfo& s = g_smrs[i];
+        if (!s.obj) continue;
+
+        void* tr = mGetTr ? invoke(mGetTr, s.obj, nullptr) : nullptr;
+        void* p  = (tr && mPos) ? invoke(mPos, tr, nullptr) : nullptr;
+        const float wx = vec3_get(p, 0), wy = vec3_get(p, 1), wz = vec3_get(p, 2);
+
+        // 相机空间（Matrix4x4 列主序：m[col*4+row]）
+        const float cx = view[0]*wx + view[4]*wy + view[8]*wz + view[12];
+        const float cy = view[1]*wx + view[5]*wy + view[9]*wz + view[13];
+        const float cz = view[2]*wx + view[6]*wy + view[10]*wz + view[14];
+
+        // 屏幕投影（Vector3 值类型，传地址）
+        float sx = -1, sy = -1, sz = 0;
+        if (cam && mW2S && p) {
+            float arg[3] = { wx, wy, wz };
+            void* a[1] = { arg };
+            void* r = invoke(mW2S, cam, a);
+            if (r) { sx = vec3_get(r, 0); sy = vec3_get(r, 1); sz = vec3_get(r, 2); }
+        }
+
+        // 激活
+        bool active = true;
+        if (mGetGO && mActive) {
+            void* go = invoke(mGetGO, s.obj, nullptr);
+            void* r  = go ? invoke(mActive, go, nullptr) : nullptr;
+            if (r) active = (*(uint8_t*)((char*)r + 16) != 0);
+        }
+
+        // 父链交集
+        int shareAnc = 0;
+        if (mId && mParent) {
+            void* t = tr;
+            for (int k = 0; k < 10 && t; k++) {
+                void* r = invoke(mId, t, nullptr);
+                int32_t idv = r ? *(int32_t*)((char*)r + 16) : 0;
+                for (int c = 0; c < camChainN; c++)
+                    if (idv && idv == camChain[c]) { shareAnc = 1; break; }
+                if (shareAnc) break;
+                t = invoke(mParent, t, nullptr);
+            }
+        }
+
+        // 打分
+        int score = 0;
+        if (active) score += 10;
+        if (s.boneCount >= 40) score += 10;
+        if (shareAnc) score += 100;
+        if (fabsf(cx) < 1.5f && cz > 1.0f && cz < 8.0f) score += 40;
+        if (sx >= 0 && pixW > 0 && pixH > 0) {
+            const float u = sx / (float)pixW, v = sy / (float)pixH;
+            if (u > 0.30f && u < 0.70f && v > 0.10f && v < 0.55f) score += 20;
+        }
+        if (s.name.find("Body") != std::string::npos) score += 5;
+
+        L("[CENSUS] #%zu '%s' bones=%d active=%d cam=(%.2f,%.2f,%.2f) shareAnc=%d screen=(%.2f,%.2f) score=%d",
+          i, s.name.c_str(), s.boneCount, (int)active, cx, cy, cz, shareAnc,
+          pixW ? sx / (float)pixW : -1.0f, pixH ? sy / (float)pixH : -1.0f, score);
+
+        if (s.boneCount >= 30 && score > bestScore) { bestScore = score; best = (int)i; }
+    }
+
+    if (best < 0) {
+        L("[CENSUS] 没有候选（SMR=%zu）", g_smrs.size());
+        return;
+    }
+
+    // ---- 锁定 + 钉骨骼 ----
+    g_anchorBones.clear();
+    g_anchorIdx = best;
+    g_anchorScore = bestScore;
+    g_anchorSmr = g_smrs[(size_t)best].obj;
+
+    void* arr = mBones ? invoke(mBones, g_anchorSmr, nullptr) : nullptr;
+    if (!arr) { L("[ANCHOR] get_bones 返回空"); return; }
+    const int32_t n = *(int32_t*)((char*)arr + 24);
+    L("[ANCHOR] 锁定 #%d '%s' bones=%d score=%d", best,
+      g_smrs[(size_t)best].name.c_str(), n, bestScore);
+
+    g_anchorBones.reserve((size_t)n);
+    for (int32_t k = 0; k < n && k < 512; k++) {
+        void* tr = *(void**)((char*)arr + 32 + (size_t)k * 8);
+        AnchorBone b;
+        b.tr = tr;
+        if (tr) {
+            void* r = mId ? invoke(mId, tr, nullptr) : nullptr;
+            b.id = r ? *(int32_t*)((char*)r + 16) : 0;
+            read_name(tr, mName, b.name, sizeof(b.name));
+            if (g_api.gchandle_new) b.handle = g_api.gchandle_new((Il2CppObject*)tr, true);
+        }
+        L("[ANCHOR]   [%d] '%s' id=%d tr=%p h=%u", k, b.name, b.id, b.tr, b.handle);
+        g_anchorBones.push_back(b);
+    }
+    L("[ANCHOR] 完成：%zu 根骨骼已钉住", g_anchorBones.size());
+}
+
 static void dump_smrs() {
     L("========== [UNITY] SMR DUMP (%zu) ==========", g_smrs.size());
     int offMatch = 0, offTotal = 0;
@@ -571,30 +762,20 @@ static void dump_smrs() {
     L("[UNITY] offset check: %d / %d match (%s)", offMatch, offTotal,
       offTotal && offMatch == offTotal ? "PASS" : "FAIL");
 
-    // ---- 骨骼名：Delta 重定向要按名字对齐，先把名字全拿下来 ----
-    // 顺带装 Object.get_name 的 hook，抓「谁在读名字」的调用点，
-    // 用来反查游戏内部的骨骼查找函数（LR 偏移可直接固化成基址定位）。
-    {
-        // 只挑名字带 Body 的（之前取第一个 boneCount>=40，结果抓到的是 Face SMR，
-        // 打出来全是 bone_yanjing / bone_zuiba 这些嘴眼骨，躯干那套 BN_* 一条没有）
-        int dumped = 0;
-        for (size_t i = 0; i < g_smrs.size() && dumped < 3; i++) {
-            if (!g_smrs[i].obj) continue;
-            if (g_smrs[i].boneCount < 40) continue;
-            if (g_smrs[i].name.find("Body") == std::string::npos) continue;
+    // =============================================================
+    // 火力覆盖：全场景骨骼普查 + 玩家骨骼锚定
+    //
+    // 之前的问题：只采了一个 SMR 的名字（而且是 Face），躯干那套 BN_* 一条没有。
+    // 现在：
+    //   1) 遍历所有 SMR，每个都打一把名字（带 instanceID 和世界坐标）
+    //   2) 从中挑“玩家主控”（激活 + 离主相机最近 + 骨骼数够）
+    //   3) 把它的骨骼 Transform 全部 gchandle 钉住 —— 这就是锚点，
+    //      后面翻译层直接用这份数组，不用每帧重新 get_bones
+    // =============================================================
+    census_and_anchor();
 
-            std::vector<game::BoneNameEntry> names;
-            if (game::collect_bone_names(g_smrs[i].obj, names)) {
-                L("[BONENAME] SMR #%zu '%s' bones=%zu", i,
-                  g_smrs[i].name.c_str(), names.size());
-                game::dump_bone_names(names, 160);   // 全量打，翻译层要靠名字做映射
-                dumped++;
-            }
-        }
-        if (!dumped) L("[BONENAME] 没找到名字带 Body 的 SMR（g_smrs=%zu）", g_smrs.size());
-        if (!game::name_hook_installed()) {
-            game::install_name_hook(64);
-        }
+    if (!game::name_hook_installed()) {
+        game::install_name_hook(64);
     }
 
     // ---- C 方案前置：自建渲染对象的 API 探测（只读，不改任何流程）----
