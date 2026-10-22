@@ -246,12 +246,14 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     // 材质侧诊断开关（6/7/8 见 material.cpp 顶部注释）
     mmd::set_material_mode((diagMode >= 6 && diagMode <= 8) ? diagMode : 0);
 
-    // 【默认用 Shader.Find 链（Mobile/Diffuse 优先）】
-    // 这是 ModelMod 验证过能出图的组合：Mobile/Diffuse + mainTexture。
-    // 游戏自己的 shader 不认 _MainTex（build-137 实测八个属性名全是 0），
-    // 只有当 Shader.Find 全都拿不到时才拿它兜底。
-    // 想手动指定 shader 就在 mmd_shader 文件里写名字。
-    if (false) {
+    // 【默认回到游戏原材质 shader】
+    // build-138 实测：Shader.Find 拿到的内置 shader（Mobile/Diffuse /
+    // Unlit/Texture）一渲染就崩在同一地址 pc=libunity+0x826df8、
+    // fault 恒定 0x6800600000001 —— 说明游戏打包时把这些内置 shader 的
+    // pass 全 strip 了，对象存在但没有可用 pass。
+    // 只有游戏自己的 shader 是完整编译过的，只能用它。
+    // 想试别的就在 mmd_shader 文件里写名字。
+    if (true) {
         void* rCls = uo::u_class("UnityEngine", "Renderer");
         void* mGetMat = rCls ? uo::u_method(rCls, "get_sharedMaterial", 0) : nullptr;
         void* refMat = mGetMat ? uo::u_call(smr.managed, mGetMat, nullptr) : nullptr;
