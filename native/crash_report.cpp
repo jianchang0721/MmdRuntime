@@ -28,9 +28,13 @@ struct MapEnt {
     char      path[112];
 };
 
-MapEnt  g_maps[2048];
+// 这台机子 /proc/self/maps 有 6000+ 行，2048 条会截断——截断在外面
+// 就等于 pc 查不到模块。表开够 8192 条，读缓冲 2MB。
+MapEnt  g_maps[8192];
 int     g_nmaps = 0;
 int     g_fd    = -1;
+
+static char s_mapsBuf[2 * 1024 * 1024];
 
 char    g_altstack[64 * 1024] __attribute__((aligned(16)));
 
@@ -48,11 +52,13 @@ void load_maps() {
     int fd = (int)syscall(__NR_openat, AT_FDCWD, "/proc/self/maps", O_RDONLY, 0);
     if (fd < 0) return;
 
-    static char buf[256 * 1024];
+    char* buf = s_mapsBuf;
+    const size_t bufSize = sizeof(s_mapsBuf);
+    g_nmaps = 0;
     ssize_t total = 0;
     for (;;) {
-        if (total >= (ssize_t)sizeof(buf) - 1) break;
-        ssize_t n = syscall(__NR_read, fd, buf + total, sizeof(buf) - 1 - (size_t)total);
+        if (total >= (ssize_t)bufSize - 1) break;
+        ssize_t n = syscall(__NR_read, fd, buf + total, bufSize - 1 - (size_t)total);
         if (n <= 0) break;
         total += n;
     }
@@ -105,6 +111,9 @@ void fmt_addr(char* out, size_t n, uintptr_t a) {
 
 void handler(int sig, siginfo_t* si, void* uc_) {
     ucontext_t* uc = (ucontext_t*)uc_;
+
+    // 现场重读一遍 maps：装上之后新 mmap 的库也能查到
+    load_maps();
 
     uintptr_t pc = (uintptr_t)uc->uc_mcontext.pc;
     uintptr_t lr = (uintptr_t)uc->uc_mcontext.regs[30];
