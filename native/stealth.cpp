@@ -422,8 +422,12 @@ void Install() {
     if (aOpenat)  rc |= DobbyHook(aOpenat,  (void*)MyOpenat,  (void**)&g_openat);
     if (aOpen)    rc |= DobbyHook(aOpen,    (void*)MyOpen,    (void**)&g_open);
     if (aOpen64)  rc |= DobbyHook(aOpen64,  (void*)MyOpen,    (void**)&g_open64);
-    if (aFopen)   rc |= DobbyHook(aFopen,   (void*)MyFopen,   (void**)&g_fopen);
-    if (aFopen64) rc |= DobbyHook(aFopen64, (void*)MyFopen64, (void**)&g_fopen64);
+    // 2026-10-22 实测：fopen/fopen64 两条 hook 导致 fdsan abort
+    // （fdsan: attempted to close file descriptor ... owned by FILE* ...），
+    // 模型加载成功后进程立刻死。open/openat 已经覆盖 maps/status 的读取路径，
+    // fopen 系暂时不装，等定位到 fdsan 冲突根因再恢复。
+    // if (aFopen)   rc |= DobbyHook(aFopen,   (void*)MyFopen,   (void**)&g_fopen);
+    // if (aFopen64) rc |= DobbyHook(aFopen64, (void*)MyFopen64, (void**)&g_fopen64);
     if (aDlIter)  rc |= DobbyHook(aDlIter,  (void*)MyDlIterate, (void**)&g_dl_iter);
     if (aPropGet) rc |= DobbyHook(aPropGet, (void*)MyPropGet,   (void**)&g_prop_get);
 
