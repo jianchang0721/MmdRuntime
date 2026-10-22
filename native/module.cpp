@@ -711,6 +711,31 @@ static void census_and_anchor() {
         }
         if (s.name.find("Body") != std::string::npos) score += 5;
 
+        // Ancestor chain names: the player character usually hangs under a
+        // PlayerRoot / Player / Hero node. A "player" hit is worth more than
+        // every geometric signal combined.
+        {
+            char chain[320];
+            int off = 0;
+            chain[0] = 0;
+            void* t = tr;
+            for (int k = 0; k < 6 && t; k++) {
+                char nm[64];
+                read_name(t, mName, nm, sizeof(nm));
+                if (nm[0] && off < (int)sizeof(chain) - 72)
+                    off += snprintf(chain + off, sizeof(chain) - off, "/%s", nm);
+                t = mParent ? invoke(mParent, t, nullptr) : nullptr;
+            }
+            L("[CENSUS] #%zu chain:%s", i, chain[0] ? chain : "(empty)");
+
+            char low[320];
+            int ln = 0;
+            for (const char* p = chain; *p && ln < (int)sizeof(low) - 1; p++)
+                low[ln++] = (char)tolower((unsigned char)*p);
+            low[ln] = 0;
+            if (strstr(low, "player") || strstr(low, "hero") || strstr(low, "mainrole")) score += 200;
+        }
+
         L("[CENSUS] #%zu '%s' bones=%d active=%d cam=(%.2f,%.2f,%.2f) shareAnc=%d screen=(%.2f,%.2f) score=%d",
           i, s.name.c_str(), s.boneCount, (int)active, cx, cy, cz, shareAnc,
           pixW ? sx / (float)pixW : -1.0f, pixH ? sy / (float)pixH : -1.0f, score);
