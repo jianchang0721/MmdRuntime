@@ -49,6 +49,21 @@ struct GcGuard {
     }
 };
 
+// 诊断开关文件：游戏私有目录/mmd_diag，内容一个字符
+//   0/不存在 = 正常
+//   1 = 原角色 mesh + 原角色材质     2 = 我们的 mesh + 原材质
+//   3 = 原 mesh + 我们的材质         4 = 我们的 mesh + 我们的材质，但不挂贴图
+//   5 = 我们的 mesh + 我们的材质，25 个子网格全用 material[0]
+static int read_diag_mode() {
+    int fd = open("/data/data/com.hermes.h1game/files/mmd_diag", O_RDONLY);
+    if (fd < 0) return 0;
+    char c = 0;
+    int n = (int)read(fd, &c, 1);
+    close(fd);
+    if (n != 1 || c < '0' || c > '9') return 0;
+    return c - '0';
+}
+
 void set_err(LoadResult& out, const char* msg) {
     snprintf(out.error, sizeof(out.error), "%s", msg ? msg : "unknown");
     LLOG("[LOADER] FAILED: %s", out.error);
@@ -149,9 +164,18 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
          out.verts, out.tris, bm.boneCount, bm.subMeshes);
 
     // ---- ④b 贴图 + 材质 ----
+    const int diagMode = read_diag_mode();
+    if (diagMode) LLOG("[DIAG] mode=%d", diagMode);
+
     mmd::TextureSet tex;
     mmd::load_textures(model, pmxPath, tex, logf_cb);
     out.textures = tex.loaded;
+
+    // mode 4：材质不挂贴图，单独验证是不是 Texture2D 把渲染命令流喂坏的
+    if (diagMode == 4) {
+        LLOG("[DIAG] 跳过贴图绑定（清空 tex.items，纹理已解码但不用）");
+        tex.items.clear();
+    }
 
     // 贴图必须钉住：材质里存的是 native PPtr，Texture2D 被 GC 收掉后
     // native 纹理就释放了，渲染线程下一帧解引用直接 SIGSEGV。
@@ -236,14 +260,11 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         // 先分清是「我们建的网格」还是「我们建的材质」把命令流喂坏了。
         void* useMesh = bm.mesh;
         std::vector<void*> useMats = matsOk;
-        int diag = 0;
-        {
-            int fd = open("/data/data/com.hermes.h1game/files/mmd_diag", O_RDONLY);
-            if (fd >= 0) {
-                char c = 0;
-                if (read(fd, &c, 1) == 1 && c >= '1' && c <= '3') diag = c - '0';
-                close(fd);
-            }
+        const int diag = diagMode;
+        // mode 5：25 个子网格全用 material[0]
+        if (diag == 5 && !matsOk.empty()) {
+            useMats.assign((size_t)bm.subMeshes, matsOk[0]);
+            LLOG("[DIAG] mode=5：%d 个子网格全用 material[0]=%p", bm.subMeshes, matsOk[0]);
         }
         if (diag) {
             LLOG("[DIAG] mode=%d（1=refmesh+refmat 2=ourmesh+refmat 3=refmesh+ourmat）", diag);
