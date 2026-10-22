@@ -199,8 +199,25 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     // 材质侧诊断开关（6/7/8 见 material.cpp 顶部注释）
     mmd::set_material_mode((diagMode >= 6 && diagMode <= 8) ? diagMode : 0);
 
-    // mode 9：不用 Shader.Find，直接拿游戏原材质的 shader。
-    // 如果 Unlit/Texture 在这个 build 里被 strip 成空 pass，用游戏自己的就没事。
+    // 【默认就用游戏原材质的 shader】
+    // build-131 实测：Unlit/Texture / 甚至连材质属性都不设，只要拿它建 Material
+    // 就会在渲染命令流里踩野指针崩（pc=libunity+0x826df8, fault=0x6800600000001）；
+    // 换成游戏自己角色材质用的 shader 后不崩且能出图。
+    // 所以 Shader.Find 那条回退链降级成兵家必争之外的兼顾。
+    {
+        void* rCls = uo::u_class("UnityEngine", "Renderer");
+        void* mGetMat = rCls ? uo::u_method(rCls, "get_sharedMaterial", 0) : nullptr;
+        void* refMat = mGetMat ? uo::u_call(smr.managed, mGetMat, nullptr) : nullptr;
+        void* matCls = uo::u_class("UnityEngine", "Material");
+        void* mGetShader = matCls ? uo::u_method(matCls, "get_shader", 0) : nullptr;
+        void* sh = (refMat && mGetShader) ? uo::u_call(refMat, mGetShader, nullptr) : nullptr;
+        if (sh) { mmd::set_shader_override(sh); LLOG("[MAT] 默认用游戏原材质 shader=%p", sh); }
+        else    { LLOG("[MAT] 拿不到游戏 shader，退回 Shader.Find 链"); }
+    }
+
+    // 诊断模式开关：10 = 单子网格（验证子网格/材质配对）
+    if (diagMode == 10) mmd::set_single_submesh(true);
+
     if (diagMode == 9) {
         void* rCls = uo::u_class("UnityEngine", "Renderer");
         void* mGetMat = rCls ? uo::u_method(rCls, "get_sharedMaterial", 0) : nullptr;

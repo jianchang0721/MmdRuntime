@@ -12,6 +12,7 @@
 //   5. Unity 的 Matrix4x4 内存序是 m00,m10,m20,m30,m01,m11,... 平移在 12/13/14
 // =====================================================================
 #include "logsink.h"
+
 #include "mesh_builder.h"
 
 #include <android/log.h>
@@ -25,6 +26,10 @@
 #define MLOG(...) logsink::Write(__VA_ARGS__)
 
 namespace mmd {
+
+// 诊断：所有三角形当成 1 个子网格，只配 material[0]
+static bool g_singleSubmesh = false;
+void set_single_submesh(bool on) { g_singleSubmesh = on; }
 
 namespace {
 
@@ -369,7 +374,20 @@ bool build_mesh(const Model& model, const Skeleton& skel, BuiltMesh& out) {
         }
 
         bool multiOk = false;
-        if (mc.mSetSubMeshCount && mc.mSetTrianglesSub && subs.size() > 1) {
+        if (g_singleSubmesh) {
+            // 诊断：所有索引当一个子网格，只配 material[0]。
+            // 如果这样贴图就对了，说明之前是子网格/材质配对错位。
+            MLOG("[MESH] 诊断：单子网格（全部 %zu 个三角形用 material[0]）", nf / 3);
+            void* idxArr = uo::u_new_array(mc.elemInt, nf);
+            if (idxArr) {
+                int32_t* d = (int32_t*)uo::u_array_data(idxArr);
+                for (size_t i = 0; i < nf; i++) d[i] = model.faceVertex[i];
+                void* a[1] = { idxArr };
+                uo::u_call_void(mesh, mc.mSetTriangles, a);
+                subs.clear();
+                subs.push_back({0, (int)nf});
+            }
+        } else if (mc.mSetSubMeshCount && mc.mSetTrianglesSub && subs.size() > 1) {
             int32_t sn = (int32_t)subs.size();
             int32_t before = -1;
             if (mc.mGetSubMeshCount) {
