@@ -268,6 +268,41 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         void* sh = (refMat && mGetShader) ? uo::u_call(refMat, mGetShader, nullptr) : nullptr;
         if (sh) { mmd::set_shader_override(sh); LLOG("[MAT] 默认用游戏原材质 shader=%p", sh); }
         else    { LLOG("[MAT] 拿不到游戏 shader，退回 Shader.Find 链"); }
+
+        // 诊断：把 shader 的属性表全打出来。
+        // 「白辉光 + 人物发黑」通常是 shader 要的某个数据我们没给：
+        // 描边宽度 / 法线贴图 / 自发光 / 金属度。先看清楚它有哪些属性。
+        if (sh) {
+            Il2CppClass* shCls = (Il2CppClass*)uo::u_class("UnityEngine", "Shader");
+            void* mCnt  = shCls ? uo::u_method(shCls, "GetPropertyCount", 0) : nullptr;
+            void* mName = shCls ? uo::u_method_typed(shCls, "GetPropertyName", 1, "Int32") : nullptr;
+            void* mType = shCls ? uo::u_method_typed(shCls, "GetPropertyType", 1, "Int32") : nullptr;
+            if (mCnt) {
+                void* r = uo::u_call(sh, mCnt, nullptr);
+                const int tn = r ? *(int32_t*)((char*)r + 16) : 0;
+                LLOG("[MAT] shader 属性 %d 个", tn);
+                for (int i = 0; i < tn && i < 64; i++) {
+                    int32_t idx = i;
+                    void* a[1] = { &idx };
+                    char nm[96] = {0};
+                    void* str = mName ? uo::u_call(sh, mName, a) : nullptr;
+                    if (str) {
+                        const int32_t len = *(int32_t*)((char*)str + 16);
+                        const uint16_t* ch = (const uint16_t*)((char*)str + 20);
+                        int k = 0;
+                        for (int32_t j = 0; j < len && k < (int)sizeof(nm) - 1; j++)
+                            nm[k++] = (ch[j] < 0x80) ? (char)ch[j] : '?';
+                        nm[k] = 0;
+                    }
+                    int ty = -1;
+                    if (mType) {
+                        void* rt = uo::u_call(sh, mType, a);
+                        if (rt) ty = *(int32_t*)((char*)rt + 16);
+                    }
+                    LLOG("[MAT]   [%d] '%s' type=%d", i, nm, ty);
+                }
+            }
+        }
     }
 
     // mmd_shader：文件里写 shader 名字（如 Mobile/Diffuse），用它做实验，
