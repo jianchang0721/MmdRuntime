@@ -22,8 +22,8 @@
 extern "C" {
 #endif
 
-#define MMD_API_VERSION 1
-#define MMD_BUILD_TAG   "v1.2-api"
+#define MMD_API_VERSION 2
+#define MMD_BUILD_TAG   "v1.3-freecam"
 
 // tick 状态机
 typedef enum {
@@ -118,6 +118,12 @@ typedef struct MmdApi {
     // 早版本 build-121 实测会把游戏画面搞卡。现在默认睡死（MMD_ST_DORMANT），
     // 必须玩家自己点「初始化」-> 「加载模型」。
     void (*cmd_init)(void);
+
+    // ---- apiVersion 2 追加（灵魂出窍）----
+    // 上升 / 下降 / 加速。参数 1 = 开，0 = 关。
+    void (*camera_motion)(int ascend, int descend, int boost);
+    // 飞行速度(米/秒) / 视角灵敏度(度/像素) / 摇杆半径(像素)。传 <=0 表示不改。
+    void (*camera_config)(float speed, float sens, float radius);
 } MmdApi;
 
 // 唯一导出符号

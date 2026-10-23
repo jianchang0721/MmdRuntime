@@ -1820,6 +1820,11 @@ static void tick_body() {
     }
 
     // 摄像机：放在状态机之后，保证是渲染前最后一写
+    // 把锤定的角色给摄像机（复位时拉回它身边）
+    game::camera_set_follow(g_anchorTr);
+    // 消费 UI 侧的开关请求：AddComponent / Destroy 要建/析 native 对象，
+    // 只能在 UnityMain 跑（Java 主线程跑会静默失败）
+    game::camera_pump();
     if (game::g_camera.enabled) game::g_camera.update();
 
     // Re-census trigger: create <gamedir>/mmd_recensus to re-run the census +
@@ -2175,6 +2180,16 @@ static void api_camera_zoom(float d) {
     game::g_camera.zoom(d);
 }
 
+static void api_camera_motion(int ascend, int descend, int boost) {
+    game::camera_set_motion(ascend, descend, boost);
+    L("[API] camera_motion(up=%d down=%d boost=%d)", ascend, descend, boost);
+}
+
+static void api_camera_config(float speed, float sens, float radius) {
+    game::camera_set_config(speed, sens, radius);
+    L("[API] camera_config(speed=%.2f sens=%.3f radius=%.0f)", speed, sens, radius);
+}
+
 extern "C" __attribute__((visibility("default")))
 const MmdApi* mmd_get_api(void) {
     static MmdApi api = {
@@ -2201,6 +2216,8 @@ const MmdApi* mmd_get_api(void) {
         api_camera_zoom,
         api_render_tick,
         api_cmd_init,
+        api_camera_motion,
+        api_camera_config,
     };
     static bool announced = false;
     if (!announced) {

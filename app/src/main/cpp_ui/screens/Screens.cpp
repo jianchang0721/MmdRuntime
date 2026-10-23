@@ -31,14 +31,22 @@ namespace {
 
 using Bridge::Shared;
 
-// 摄像机面板的本地状态
-bool  g_camBound    = false;
-float g_camLastDist = 4.0f;
+// 摄像机面板的本地状态（现在每帧跟游戏侧对齐，不用缓存了）
 
 inline void StatusDot(ImVec4 color) {
     ImGui::PushStyleColor(ImGuiCol_Text, color);
     ImGui::TextUnformatted("●");
     ImGui::PopStyleColor();
+}
+
+// Toggle 组件本身不画文字（只当 InvisibleButton 的 id 用），
+// 所以拉一个带标题的：文字在左，开关右对齐。
+inline bool LabeledToggle(const char* label, const char* id, bool* value) {
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine();
+    const float targetX = ImGui::GetWindowContentRegionMax().x - Theme::Sizes::SwitchSize.x;
+    if (ImGui::GetCursorPosX() < targetX) ImGui::SetCursorPosX(targetX);
+    return UI::Toggle(id, value);
 }
 
 inline void BeginSectionTitle(const char* title) {
@@ -541,45 +549,64 @@ void DrawSettingsTab(Bridge::BridgeModel& Model) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    BeginSectionTitle("自由视角");
-    static bool  camOn      = false;
-    static float camDist    = 4.0f;
-    static float camFov     = 55.0f;
+    BeginSectionTitle("灵魂出窍（自由相机）");
+    static bool  camOn     = false;
+    static bool  camUp     = false;
+    static bool  camDown   = false;
+    static bool  camBoost  = false;
+    static float camSpeed  = 6.0f;
+    static float camSens   = 0.15f;
+    static float camRadius = 100.0f;
 
-    if (!g_camBound) {
-        g_camBound = true;
-        camOn = Bridge::CameraEnabled() == 1;
-        g_camLastDist = camDist;
-    }
+    // 每帧跟游戏侧对齐：UnityMain 那边建相机可能失败，
+    // Toggle 不能一直骗人说自己开着。
+    // （刚点下去的那一帧，camera_is_enabled() 返回的就是用户的意图，一致）
+    camOn = Bridge::CameraEnabled() == 1;
 
-    if (UI::Toggle("启用自由视角", &camOn)) {
+    if (LabeledToggle("启用自由相机", "##camOn", &camOn)) {
         const int r = Bridge::CameraEnable(camOn ? 1 : 0);
         camOn = (r == 1);
-        if (r != 1) Toast::Error("摄像机开启失败，看日志 [CAM]");
-        else Toast::Success(camOn ? "自由视角已开" : "自由视角已关");
+        if (r != 1) Toast::Error("相机开启失败，看日志 [CAM]");
+        else Toast::Success(camOn ? "自由相机已开" : "自由相机已关");
     }
     ImGui::Spacing();
 
     if (camOn) {
-        ImGui::TextDisabled("左半屏拖动 = 平移，右半屏拖动 = 旋转");
+        ImGui::TextDisabled("左半屏拖 = 摇杆移动，右半屏拖 = 转视角");
         ImGui::Spacing();
 
+        // 配置只在值变了才往下推，不然每帧 60 条日志
+        static float sentSpeed  = -1.0f;
+        static float sentSens   = -1.0f;
+        static float sentRadius = -1.0f;
+
         ImGui::SetNextItemWidth(-1.0f);
-        if (ImGui::SliderFloat("##camdist", &camDist, 0.5f, 30.0f, "距离 %.1f")) {
-            Bridge::CameraZoom(camDist - g_camLastDist);
-            g_camLastDist = camDist;
+        ImGui::SliderFloat("##camspd", &camSpeed, 1.0f, 30.0f, "飞行速度 %.1f m/s");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##camsens", &camSens, 0.05f, 0.60f, "视角灵敏度 %.2f 度/px");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##camrad", &camRadius, 40.0f, 300.0f, "摇杆半径 %.0f px");
+
+        if (camSpeed != sentSpeed || camSens != sentSens || camRadius != sentRadius) {
+            sentSpeed  = camSpeed;
+            sentSens   = camSens;
+            sentRadius = camRadius;
+            Bridge::CameraConfig(camSpeed, camSens, camRadius);
         }
-        ImGui::Spacing();
 
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##camfov", &camFov, 20.0f, 110.0f, "视野 %.0f 度");
         ImGui::Spacing();
+        bool motionChanged = false;
+        if (LabeledToggle("上升", "##camUp", &camUp))       motionChanged = true;
+        if (LabeledToggle("下降", "##camDown", &camDown))   motionChanged = true;
+        if (LabeledToggle("加速 x3", "##camBoost", &camBoost)) motionChanged = true;
+        if (motionChanged) {
+            Bridge::CameraMotion(camUp ? 1 : 0, camDown ? 1 : 0, camBoost ? 1 : 0);
+        }
 
-        if (UI::Button("复位视角", ImVec2(-1.0f, 0.0f))) {
+        ImGui::Spacing();
+        if (UI::Button("回到角色身边", ImVec2(-1.0f, 0.0f))) {
             Bridge::CameraReset();
-            camDist = 4.0f;
-            g_camLastDist = 4.0f;
-            Toast::Info("视角已复位");
+            Toast::Info("已请求复位");
         }
     }
 

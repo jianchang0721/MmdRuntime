@@ -268,6 +268,16 @@ void CameraZoom(float delta) {
     if (Bind() && g_Api->camera_zoom) g_Api->camera_zoom(delta);
 }
 
+void CameraMotion(int ascend, int descend, int boost) {
+    if (Bind() && g_Api->camera_motion)
+        g_Api->camera_motion(ascend ? 1 : 0, descend ? 1 : 0, boost ? 1 : 0);
+}
+
+void CameraConfig(float speed, float sens, float radius) {
+    if (Bind() && g_Api->camera_config)
+        g_Api->camera_config(speed, sens, radius);
+}
+
 void RenderTick() {
     if (Bind() && g_Api->render_tick) g_Api->render_tick();
 }

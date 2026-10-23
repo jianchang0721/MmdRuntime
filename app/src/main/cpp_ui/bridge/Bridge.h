@@ -102,6 +102,8 @@ int  CameraEnable(int on);      // 返回 1 = 开启成功
 int  CameraEnabled();
 void CameraReset();
 void CameraZoom(float delta);   // 相对量，正数拉远
+void CameraMotion(int ascend, int descend, int boost);   // 灵魂出窍：上升/下降/加速
+void CameraConfig(float speed, float sens, float radius); // 速度 / 灵敏度 / 摇杆半径
 
 // 让游戏侧在 UnityMain 线程跑一帧（UI 的 eglSwapBuffers 里每帧调）
 void RenderTick();
