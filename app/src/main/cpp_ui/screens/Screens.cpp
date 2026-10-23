@@ -555,7 +555,7 @@ void DrawSettingsTab(Bridge::BridgeModel& Model) {
     static bool  camDown   = false;
     static bool  camBoost  = false;
     static float camSpeed  = 6.0f;
-    static float camSens   = 0.15f;
+    static float camSens   = 0.08f;
     static float camRadius = 100.0f;
 
     // 每帧跟游戏侧对齐：UnityMain 那边建相机可能失败，
@@ -583,7 +583,7 @@ void DrawSettingsTab(Bridge::BridgeModel& Model) {
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::SliderFloat("##camspd", &camSpeed, 1.0f, 30.0f, "飞行速度 %.1f m/s");
         ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##camsens", &camSens, 0.05f, 0.60f, "视角灵敏度 %.2f 度/px");
+        ImGui::SliderFloat("##camsens", &camSens, 0.02f, 0.30f, "视角灵敏度 %.2f 度/px");
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::SliderFloat("##camrad", &camRadius, 40.0f, 300.0f, "摇杆半径 %.0f px");
 

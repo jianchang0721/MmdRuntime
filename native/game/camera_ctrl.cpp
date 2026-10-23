@@ -153,22 +153,37 @@ float frame_dt() {
     return dt;
 }
 
-// Unity 左手系，前进 +z。forward 含 pitch，抬头前飞会爬升。
+// Unity 左手系，前进 +z。
+//
+// Quaternion.Euler(pitch, yaw, 0) 把 forward 转成：
+//   forward = (sin y * cos p,  -sin p,  cos y * cos p)
+// 注意 y 分量是 **-sin p** —— pitch 为正时相机会低头。
+// （build-159 之前这里写成 +sin p，再加上四元数 y/z 分量搞反，
+//   结果「手指往上划屏幕往下看、人还往上飞」，完全反人类）
 void cam_basis(float yaw, float pitch, float fwd[3], float right[3]) {
     const float cp = cosf(pitch), sp = sinf(pitch);
     const float cy = cosf(yaw),   sy = sinf(yaw);
-    fwd[0] = sy * cp;  fwd[1] = sp;  fwd[2] = cy * cp;
+    fwd[0] = sy * cp;  fwd[1] = -sp;  fwd[2] = cy * cp;
     right[0] = cy;     right[1] = 0.0f; right[2] = -sy;
 }
 
 // Quaternion.Euler(pitch, yaw, 0)（Unity 欧拉顺序 ZXY → R = Ry * Rx）
+//
+// qY * qX 展开式（y=sin(yaw/2) 记作 sy，p=sin(pitch/2) 记作 sp）：
+//   x = cy*sp
+//   y = cp*sy      ← 不是 sp*sy
+//   z = -sp*sy     ← 不是 cp*sy
+//   w = cp*cy
+// build-159 把 y/z 分量写反了，旋转整个乱掉。
 void euler_to_quat(float yaw, float pitch, float q[4]) {
     const float halfP = pitch * 0.5f;
     const float halfY = yaw * 0.5f;
-    q[0] = sinf(halfP) * cosf(halfY);
-    q[1] = sinf(halfP) * sinf(halfY);
-    q[2] = cosf(halfP) * sinf(halfY);
-    q[3] = cosf(halfP) * cosf(halfY);
+    const float sp = sinf(halfP), cp = cosf(halfP);
+    const float sy = sinf(halfY), cy = cosf(halfY);
+    q[0] = cy * sp;
+    q[1] = cp * sy;
+    q[2] = -sp * sy;
+    q[3] = cp * cy;
 }
 
 void normalize_yaw_pitch() {
@@ -254,7 +269,9 @@ void quat_to_yaw_pitch(const float q[4], float* yaw, float* pitch) {
     const float fy = 2.0f * (y * z - w * x);
     const float fz = 1.0f - 2.0f * (x * x + y * y);
     *yaw = atan2f(fx, fz);
-    *pitch = asinf(fy < -1.0f ? -1.0f : (fy > 1.0f ? 1.0f : fy));
+    // forward.y = -sin(pitch) → pitch = -asin(forward.y)
+    const float clamped = fy < -1.0f ? -1.0f : (fy > 1.0f ? 1.0f : fy);
+    *pitch = -asinf(clamped);
 }
 
 void camera_rebuild();
@@ -569,7 +586,8 @@ bool freefly_touch(int action, int pointerId, float x, float y,
                 c.lookLastX = x;
                 c.lookLastY = y;
                 c.yaw   += dx * c.lookSens * kDeg2Rad;
-                c.pitch -= dy * c.lookSens * kDeg2Rad;
+                // 手指往上划（dy<0）→ pitch 变小 → 抬头（forward.y 变正）
+                c.pitch += dy * c.lookSens * kDeg2Rad;
                 normalize_yaw_pitch();
                 return true;
             }
