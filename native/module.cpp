@@ -1186,21 +1186,36 @@ static void retarget_update() {
     static const MethodInfo* sSetPos = nullptr;
     static const MethodInfo* sGetPos = nullptr;
     static bool sTried = false;
+    static const MethodInfo* sGetBones = nullptr;
     if (!sTried) {
         sTried = true;
         sGetRot = find_method_any(trCls, "get_rotation");
         sSetRot = find_method_any(trCls, "set_rotation");
         sSetPos = find_method_any(trCls, "set_position");
         sGetPos = find_method_any(trCls, "get_position");
-        L("[RT] methods getRot=%p setRot=%p getPos=%p setPos=%p",
-          (void*)sGetRot, (void*)sSetRot, (void*)sGetPos, (void*)sSetPos);
+        sGetBones = g_smrClass ? find_method_any(g_smrClass, "get_bones") : nullptr;
+        L("[RT] methods getRot=%p setRot=%p getPos=%p setPos=%p getBones=%p atr=%p mroot=%p",
+          (void*)sGetRot, (void*)sSetRot, (void*)sGetPos, (void*)sSetPos,
+          (void*)sGetBones, g_anchorTr, load_ref().modelRoot);
     }
     if (!sGetRot || !sSetRot) return;
 
+    // 每帧重新拿一次骨骼数组。
+    // 游戏的对象池会重建 SMR 的 bones，缓存的 Transform 可能指向已经停用
+    // 的旧对象 —— 表现就是模型挂着但摆着不动（这是 21 对全死的最可能原因）。
+    void* boneArr = (sGetBones && g_anchorSmr) ? invoke(sGetBones, g_anchorSmr, nullptr) : nullptr;
+    const int32_t boneN = boneArr ? *(int32_t*)((char*)boneArr + 24) : 0;
+
     for (size_t i = 0; i < g_pairs.size(); i++) {
         RetargetPair& p = g_pairs[i];
-        if (p.game < 0 || p.game >= (int)g_anchorBones.size()) continue;
-        void* gt = g_anchorBones[(size_t)p.game].tr;
+        if (p.game < 0) continue;
+        void* gt = nullptr;
+        if (boneArr && p.game < boneN) {
+            gt = *(void**)((char*)boneArr + 32 + (size_t)p.game * 8);
+        }
+        if (!gt && p.game < (int)g_anchorBones.size()) {
+            gt = g_anchorBones[(size_t)p.game].tr;   // 退回缓存
+        }
         void* mt = load_ref().skeleton.transform_at(p.mmd);
         if (!gt || !mt) continue;
         void* q = invoke(sGetRot, gt, nullptr);
