@@ -623,23 +623,6 @@ static int count_known_bones(void* smr, const MethodInfo* mBones, const MethodIn
 static void build_retarget();   // defined below, called after a successful anchor
 
 static void census_and_anchor(bool force = false) {
-    // 已经锤定过、对象还活着（native 指针非空）→ 不重选。
-    // 否则“开自由相机飞一圈再重扫”就会把锚点换到别的对象上去。
-    // 要换锚点就写 mmd_recensus 文件（走 force 路径）。
-    if (!force && g_anchorSmr && !g_anchorBones.empty()) {
-        void* nat = *(void**)((char*)g_anchorSmr + 16);
-        if (nat) {
-            static bool logged = false;
-            if (!logged) {
-                logged = true;
-                L("[CENSUS] already anchored (%zu bones, score=%d), skip re-selection",
-                  g_anchorBones.size(), g_anchorScore);
-            }
-            return;
-        }
-        L("[CENSUS] 已有锚点已失效（native=%p），重新选", nat);
-    }
-
     Il2CppClass* trCls   = find_class_any("UnityEngine", "Transform");
     Il2CppClass* objCls  = find_class_any("UnityEngine", "Object");
     Il2CppClass* compCls = find_class_any("UnityEngine", "Component");
@@ -659,6 +642,31 @@ static void census_and_anchor(bool force = false) {
     const MethodInfo* mPixH   = camCls  ? find_method_any(camCls, "get_pixelHeight") : nullptr;
     const MethodInfo* mActive = goCls   ? find_method_any(goCls, "get_activeInHierarchy") : nullptr;
     const MethodInfo* mMain   = camCls  ? find_method_any(camCls, "get_main") : nullptr;
+
+    // 已经锚定过：对象还活着 **而且 GameObject 还 active** 就不重选。
+    //
+    // 只看 native 指针不够 —— 角色被对象池收掉时 native 还在，
+    // 但整个 GameObject 已经停用，骨骼永远不再更新，表现就是
+    // 「模型挂着但摆着不跟着动」。这是 build-166/167 之后剩下的坑。
+    if (!force && g_anchorSmr && !g_anchorBones.empty()) {
+        void* nat = *(void**)((char*)g_anchorSmr + 16);
+        bool act = false;
+        if (nat && mGetGO && mActive) {
+            void* go = invoke(mGetGO, g_anchorSmr, nullptr);
+            void* r  = go ? invoke(mActive, go, nullptr) : nullptr;
+            if (r) act = (*(uint8_t*)((char*)r + 16)) != 0;
+        }
+        if (nat && act) {
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                L("[CENSUS] already anchored (%zu bones, score=%d, active) -> skip",
+                  g_anchorBones.size(), g_anchorScore);
+            }
+            return;
+        }
+        L("[CENSUS] anchor stale (native=%p active=%d) -> re-select", nat, (int)act);
+    }
 
     L("[CENSUS] 开始：SMR=%zu  依赖 bones=%p name=%p pos=%p w2c=%p w2s=%p",
       g_smrs.size(), (void*)mBones, (void*)mName, (void*)mPos, (void*)mW2C, (void*)mW2S);
@@ -1252,10 +1260,20 @@ static void retarget_update() {
             void* ro = (mt0 && sGetRot) ? invoke(sGetRot, mt0, nullptr) : nullptr;
             if (ro) memcpy(out, (char*)ro + 16, sizeof(out));
 
-            L("[RTDIAG] pairs=%zu bone0='%s' g=(%.3f,%.3f,%.3f,%.3f) off=%d(%.2f,%.2f,%.2f,%.2f) mmd=(%.3f,%.3f,%.3f,%.3f)",
-              g_pairs.size(), p0.g, qq[0], qq[1], qq[2], qq[3],
-              (int)p0.offValid, p0.off[0], p0.off[1], p0.off[2], p0.off[3],
-              out[0], out[1], out[2], out[3]);
+            // 位置诊断：角色走动时 apos/ppos 必须变；mroot 应该跟着 apos 走。
+            float ap[3] = {0, 0, 0}, pp[3] = {0, 0, 0}, mp[3] = {0, 0, 0};
+            void* apo = (g_anchorTr && sGetPos) ? invoke(sGetPos, g_anchorTr, nullptr) : nullptr;
+            if (apo) memcpy(ap, (char*)apo + 16, sizeof(ap));
+            void* ppo = (gt0 && sGetPos) ? invoke(sGetPos, gt0, nullptr) : nullptr;
+            if (ppo) memcpy(pp, (char*)ppo + 16, sizeof(pp));
+            void* mpo = (load_ref().modelRoot && sGetPos)
+                        ? invoke(sGetPos, load_ref().modelRoot, nullptr) : nullptr;
+            if (mpo) memcpy(mp, (char*)mpo + 16, sizeof(mp));
+
+            L("[RTDIAG] pairs=%zu g=(%.2f,%.2f,%.2f,%.2f) off=%d mmd=(%.2f,%.2f,%.2f,%.2f) apos=(%.1f,%.1f,%.1f) ppos=(%.1f,%.1f,%.1f) mroot=(%.1f,%.1f,%.1f)",
+              g_pairs.size(), qq[0], qq[1], qq[2], qq[3],
+              (int)p0.offValid, out[0], out[1], out[2], out[3],
+              ap[0], ap[1], ap[2], pp[0], pp[1], pp[2], mp[0], mp[1], mp[2]);
         }
     }
 
