@@ -33,6 +33,7 @@ add_library(mmdruntime SHARED
     game/skin_cpu.cpp
     game/cam_override.cpp
     game/cam_native.cpp
+    game/freecam.cpp
     game/loader.cpp
     game/camera_ctrl.cpp
 )

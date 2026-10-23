@@ -18,6 +18,7 @@
 #include "unity/il2cpp_api.h"
 #include "cam_override.h"
 #include "cam_native.h"
+#include "freecam.h"
 #include "logsink.h"
 #include "unity/unity_objects.h"
 
@@ -193,17 +194,42 @@ static float read_axis(const char* name) {
 //      Unity 内部 C++ 调 Transform 走原生直路，不过 managed icall。
 // 所以：managed Object+0x10 = m_CachedPtr，直接读写 native 内存。
 // 偏移靠「读出来的值是否合理」动态探测，不写死。
+// 相机指针会变（开关自由相机时从游戏相机换成我们新建的），
+// 变了就重新 attach 并重新探测偏移。
 static void ensure_cam_native(void* tr) {
-    static bool tried = false;
-    if (tried) return;
-    tried = true;
+    static void* s_last = nullptr;
+    if (tr == s_last) return;
+    s_last = tr;
     void* nat = cam_native::attach(tr);
     float p[3] = {0, 0, 0};
     if (nat && cam_native::get_world_pos(tr, p)) {
-        CLOG("[CAM] native pos=(%.2f, %.2f, %.2f) off=0x%x",
-             p[0], p[1], p[2], cam_native::off_pos());
+        CLOG("[CAM] native attach tr=%p nat=%p pos=(%.2f, %.2f, %.2f) off=0x%x",
+             tr, nat, p[0], p[1], p[2], cam_native::off_pos());
     } else {
-        CLOG("[CAM] native pos read FAILED (nat=%p)", nat);
+        CLOG("[CAM] native attach tr=%p nat=%p pos read FAILED (fallback to managed)",
+             tr, nat);
+    }
+}
+
+// 写位置：native 优先，不行就回退 managed（我们自己建的相机，managed 写入没人覆盖）
+static void write_cam_pos(void* tr, const float p[3]) {
+    if (cam_native::set_world_pos(tr, p)) return;
+    static void* mSetPos = nullptr;
+    static bool tried = false;
+    if (!tried) { tried = true; mSetPos = g_setPos; }
+    if (mSetPos) {
+        float v[3] = { p[0], p[1], p[2] };
+        void* a[1] = { v };
+        uo::u_call_void(tr, mSetPos, a);
+    }
+}
+
+static void write_cam_rot(void* tr, const float q[4]) {
+    if (cam_native::set_world_rot(tr, q)) return;
+    if (g_setRot) {
+        float v[4] = { q[0], q[1], q[2], q[3] };
+        void* a[1] = { v };
+        uo::u_call_void(tr, g_setRot, a);
     }
 }
 
@@ -239,8 +265,8 @@ void CameraCtrl::update() {
         camPos[0] += (v * syw + h * cyw) * flySpeed * dt;
         camPos[2] += (v * cyw - h * syw) * flySpeed * dt;
 
-        // native 直写：绕开 managed setter
-        cam_native::set_world_pos(transform, camPos);
+        // 写入：native 优先，失败回退 managed
+        write_cam_pos(transform, camPos);
 
         // 朝向：yaw/pitch（右半屏拖动改这两个值）
         const float halfP = pitch * 0.5f;
@@ -260,8 +286,8 @@ void CameraCtrl::update() {
             uo::u_call_void(camera, g_setFov, a3);
         }
 
-    // native 直写旋转
-    cam_native::set_world_rot(transform, q);
+    // 写入旋转（native 优先，失败回退 managed）
+    write_cam_rot(transform, q);
 
     // 每 60 帧打一次摇杆值，确认游戏摇杆真的映射到这两个轴
         static int flyBeat = 0;
@@ -287,9 +313,8 @@ void CameraCtrl::update() {
     cy = target[1] + dist * sp;
     cz = target[2] + dist * cp * cyw;
 
-    struct { float x, y, z; } pos = { cx, cy, cz };
-    void* a1[1] = { &pos };
-    uo::u_call_void(transform, g_setPos, a1);
+    const float pos[3] = { cx, cy, cz };
+    write_cam_pos(transform, pos);
 
     // 摄像机要看向 target：pitch 取负，因为「摄像机抬头」= 欧拉角减小
     // Unity 的 Quaternion 顺序是 (x, y, z, w)
@@ -301,8 +326,7 @@ void CameraCtrl::update() {
     float q3 = cosf(halfP) * cosf(halfY);
     float q[4] = { q0, q1, q2, q3 };
 
-    void* a2[1] = { q };
-    uo::u_call_void(transform, g_setRot, a2);
+    write_cam_rot(transform, q);
 
     if (g_setFov) {
         float fov = 55.0f;
@@ -407,16 +431,53 @@ bool camera_touch(int action, int pointerId, float x, float y,
 
 void camera_set_enabled(int on) {
     const bool want = (on != 0);
-    if (want && !g_camera.scanned) {
-        // 第一次开：先扫
-        int n = g_camera.scan();
-        if (n <= 0) {
-            CLOG("[CAM] 开不起来：场景里没有可用摄像机");
-            return;
+
+    // 游戏原相机（scan 结果），freecam 会把它关掉并把我们的相机顶上来
+    static void* s_gameCam = nullptr;
+    static void* s_gameTr  = nullptr;
+
+    if (want) {
+        if (g_camera.enabled) return;
+
+        if (!g_camera.scanned) {
+            int n = g_camera.scan();
+            if (n <= 0) {
+                CLOG("[CAM] 开不起来：场景里没有可用摄像机");
+                return;
+            }
         }
+
+        // ---- 新建一台相机接管画面（用户给的 C# 方案）----
+        // 不跟游戏抢同一个 Transform：游戏爱怎么写它自己的相机就怎么写，
+        // 反正它已经不渲染了。我们的相机没人碰，写多少就是多少。
+        if (!s_gameCam) { s_gameCam = g_camera.camera; s_gameTr = g_camera.transform; }
+
+        void* newTr = freecam::enable(s_gameCam);
+        if (newTr) {
+            g_camera.camera = freecam::camera();
+            g_camera.transform = newTr;
+            CLOG("[CAM] freecam active: cam=%p tr=%p depth=%d",
+                 g_camera.camera, g_camera.transform, freecam::depth());
+        } else {
+            CLOG("[CAM] freecam 建相机失败，退回改原相机（会被游戏覆盖）");
+            g_camera.camera = s_gameCam;
+            g_camera.transform = s_gameTr;
+        }
+
+        // 相机换了，位置缓存要重新对齐
+        g_camera.camPos[0] = g_camera.camPos[1] = g_camera.camPos[2] = 0.0f;
+        g_camera.enabled = true;
+        CLOG("[CAM] 自由视角开");
+        return;
     }
-    g_camera.enabled = want;
-    CLOG("[CAM] %s", want ? "自由视角开" : "自由视角关");
+
+    // ---- 关 ----
+    if (!g_camera.enabled) return;
+    g_camera.enabled = false;
+    freecam::disable();
+    if (s_gameCam) { g_camera.camera = s_gameCam; g_camera.transform = s_gameTr; }
+    g_camera.camPos[0] = g_camera.camPos[1] = g_camera.camPos[2] = 0.0f;
+    CLOG("[CAM] 自由视角关，原相机已恢复");
 }
 
 int camera_is_enabled() { return g_camera.enabled ? 1 : 0; }
