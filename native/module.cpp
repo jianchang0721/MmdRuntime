@@ -629,10 +629,12 @@ static void census_and_anchor(bool force = false) {
     if (!force && g_anchorSmr && !g_anchorBones.empty()) {
         void* nat = *(void**)((char*)g_anchorSmr + 16);
         if (nat) {
-            const char* nm = (g_anchorIdx >= 0 && g_anchorIdx < (int)g_smrs.size())
-                             ? g_smrs[(size_t)g_anchorIdx].name.c_str() : "?";
-            L("[CENSUS] 已有锚点 '%s'（%zu 根，score=%d），跳过重选",
-              nm, g_anchorBones.size(), g_anchorScore);
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                L("[CENSUS] already anchored (%zu bones, score=%d), skip re-selection",
+                  g_anchorBones.size(), g_anchorScore);
+            }
             return;
         }
         L("[CENSUS] 已有锚点已失效（native=%p），重新选", nat);
@@ -953,17 +955,25 @@ static int   g_gameBindRotN = 0;
 // 矩阵在 il2cpp 里是值类型，数组元素内联（Matrix4x4 = 16 float = 64 字节），
 // 而且 Unity 的 Matrix4x4 是列主序：raw[col*4 + row]。
 // 所以左上 3x3 的转置按行主序读就是 raw 的 {0,1,2, 4,5,6, 8,9,10}。
-static bool read_bind_rotations(const SmrInfo& info, int boneCount) {
-    if (!info.meshObj || boneCount <= 0 || boneCount > 512) {
-        L("[RT] bindposes 读取跳过（mesh=%p bones=%d）", info.meshObj, boneCount);
+// 注意：直接用锚定的那个 SMR 对象现拿 sharedMesh —— 不要用 g_smrs[g_anchorIdx]，
+// 因为 scan_smrs 重建以后索引会挪到别的 SMR 上（实测锚到 'Tui_L' / 'Weapon_03_L'
+// 时拿到的是别人家的 bindposes，offset 全错）。
+static bool read_bind_rotations(void* smrObj, int boneCount) {
+    if (!smrObj || boneCount <= 0 || boneCount > 512) {
+        L("[RT] bindposes 读取跳过（smr=%p bones=%d）", smrObj, boneCount);
         return false;
     }
     Il2CppClass* meshCls = find_class_any("UnityEngine", "Mesh");
-    if (!meshCls) return false;
-    const MethodInfo* mBp = find_method_any(meshCls, "get_bindposes");
-    if (!mBp) { L("[RT] Mesh.get_bindposes 缺失"); return false; }
+    if (!meshCls || !g_smrClass) return false;
+    const MethodInfo* mGetMesh = find_method_any(g_smrClass, "get_sharedMesh");
+    const MethodInfo* mBp      = find_method_any(meshCls, "get_bindposes");
+    if (!mGetMesh) { L("[RT] SMR.get_sharedMesh 缺失"); return false; }
+    if (!mBp)      { L("[RT] Mesh.get_bindposes 缺失"); return false; }
 
-    void* arr = invoke(mBp, info.meshObj, nullptr);
+    void* meshObj = invoke(mGetMesh, smrObj, nullptr);
+    if (!meshObj) { L("[RT] get_sharedMesh 返回 null"); return false; }
+
+    void* arr = invoke(mBp, meshObj, nullptr);
     if (!arr) { L("[RT] get_bindposes 返回 null"); return false; }
     const int32_t n = *(int32_t*)((char*)arr + 24);
     if (n < boneCount) {
@@ -978,7 +988,7 @@ static bool read_bind_rotations(const SmrInfo& info, int boneCount) {
         Il2CppClass* trCls   = find_class_any("UnityEngine", "Transform");
         const MethodInfo* mGetTr  = compCls ? find_method_any(compCls, "get_transform") : nullptr;
         const MethodInfo* mGetRot = trCls   ? find_method_any(trCls, "get_rotation") : nullptr;
-        void* tr = (mGetTr && info.obj) ? invoke(mGetTr, info.obj, nullptr) : nullptr;
+        void* tr = (mGetTr && smrObj) ? invoke(mGetTr, smrObj, nullptr) : nullptr;
         void* r  = (tr && mGetRot) ? invoke(mGetRot, tr, nullptr) : nullptr;
         if (r) memcpy(qR, (char*)r + 16, sizeof(qR));
         quat_norm(qR);
@@ -1098,9 +1108,8 @@ static void build_retarget() {
     // =================================================================
     {
         bool offOk = false;
-        if (g_anchorIdx >= 0 && g_anchorIdx < (int)g_smrs.size()) {
-            offOk = read_bind_rotations(g_smrs[(size_t)g_anchorIdx],
-                                        (int)g_anchorBones.size());
+        if (g_anchorSmr) {
+            offOk = read_bind_rotations(g_anchorSmr, (int)g_anchorBones.size());
         }
         if (!offOk) {
             // 降级：拿不到 bindposes 就把当前姿势当 bind（角色通常在站桩，误差可以接受）
