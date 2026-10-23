@@ -561,8 +561,7 @@ bool freefly_touch(int action, int pointerId, float x, float y,
                 c.moveInputY  = 0.0f;
                 return true;
             }
-            // 顶部 1/4 留给面板（折叠横栏在那儿），别抢
-            if (y < viewH * 0.25f) return false;
+            // 右半屏整块都给视角（面板自己会先吃掉自己的矩形，不用我们让）
             if (c.lookFinger >= 0) return true;
             c.lookFinger = pointerId;
             c.lookLastX  = x;
