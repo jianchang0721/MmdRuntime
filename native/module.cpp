@@ -39,6 +39,7 @@
 
 #include "game/camera_ctrl.h"
 #include "game/cam_native.h"
+#include <sys/uio.h>
 #include "game/cam_override.h"
 #include "game/smr_layout.h"
 #include "game/bone_names.h"
@@ -654,22 +655,35 @@ static int count_known_bones(void* smr, const MethodInfo* mBones, const MethodIn
     return cnt;
 }
 
+// 安全读自己进程的内存：走 process_vm_readv，越界/无权限返回 false 而不是崩。
+// find_bone_matrices 是靠猜偏移找指针，猜错就是野地址 —— 必须走这条。
+static bool safe_read(void* dst, const void* src, size_t n) {
+    if (!dst || !src || n == 0) return false;
+    struct iovec local  = { dst, n };
+    struct iovec remote = { const_cast<void*>(src), n };
+    const ssize_t r = process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+    return r == (ssize_t)n;
+}
+
 // 从 SMR native 里探 m_BoneMatrices：一个指向「连续 Matrix4x4 数组」的指针，
 // 数组长度 = boneCount，每个矩阵的最后一行必须是 (0,0,0,1)。
+//
+// 全程用 safe_read —— build-187 第一版直接 memcpy，猜错偏移就秒崩。
 static void* find_bone_matrices(void* smrNative, int boneCount) {
     if (!smrNative || boneCount <= 0 || boneCount > 512) return nullptr;
     const int cands[] = { 0x1c0, 0x1c8, 0x1d0, 0x1d8, 0x1e0, 0x1e8,
                           0x1f0, 0x1f8, 0x200, 0x208, 0x210, 0x218 };
     for (int off : cands) {
-        void* base = *(void**)((char*)smrNative + off);
+        void* base = nullptr;
+        if (!safe_read(&base, (char*)smrNative + off, sizeof(base))) continue;
         if (!base) continue;
         float m0[16];
-        memcpy(m0, base, sizeof(m0));
+        if (!safe_read(m0, base, sizeof(m0))) continue;
         if (fabsf(m0[3]) > 0.01f || fabsf(m0[7]) > 0.01f ||
             fabsf(m0[11]) > 0.01f || fabsf(m0[15] - 1.0f) > 0.01f) continue;
         if (boneCount > 1) {
             float m1[16];
-            memcpy(m1, (char*)base + 64, sizeof(m1));
+            if (!safe_read(m1, (char*)base + 64, sizeof(m1))) continue;
             if (fabsf(m1[15] - 1.0f) > 0.01f) continue;
         }
         L("[BONES] boneMatrices @ smr+0x%x = %p（%d 根）", off, base, boneCount);
@@ -983,7 +997,11 @@ static void census_and_anchor(bool force = false) {
             g_boneMatricesN = g_primaryBoneN;
             for (int i = 0; i < g_primaryBoneN; i++) {
                 float m[16];
-                memcpy(m, (char*)g_boneMatrices + (size_t)i * 64, sizeof(m));
+                if (!safe_read(m, (char*)g_boneMatrices + (size_t)i * 64, sizeof(m))) {
+                    g_boneBindRot[i][0] = g_boneBindRot[i][1] = g_boneBindRot[i][2] = 0.0f;
+                    g_boneBindRot[i][3] = 1.0f;
+                    continue;
+                }
                 const float r3[9] = { m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10] };
                 mat3_to_quat(r3, g_boneBindRot[i]);
             }
@@ -1507,10 +1525,11 @@ static void retarget_update() {
 
         if (g_boneMatrices && p.game < g_boneMatricesN) {
             float m[16];
-            memcpy(m, (char*)g_boneMatrices + (size_t)p.game * 64, sizeof(m));
-            const float r3[9] = { m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10] };
-            mat3_to_quat(r3, quat);
-            got = true;
+            if (safe_read(m, (char*)g_boneMatrices + (size_t)p.game * 64, sizeof(m))) {
+                const float r3[9] = { m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10] };
+                mat3_to_quat(r3, quat);
+                got = true;
+            }
         }
         if (!got) got = game::cam_native::get_world_rot(gt, quat);
         if (!got) {
