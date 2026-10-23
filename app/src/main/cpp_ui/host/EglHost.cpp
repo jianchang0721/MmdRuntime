@@ -25,7 +25,9 @@
 #include <unistd.h>
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <mutex>
 #include <vector>
 
@@ -291,9 +293,35 @@ EGLBoolean HookSwapBuffers(EGLDisplay dpy, EGLSurface surf) {
 // =====================================================================
 namespace Host {
 
+// 装 hook。
+//
+// 关键：**失败不能把 hooked 置 true，也不能设 broken**。
+// build-164 实测：启动早期 libEGL 可能还没进 maps（或者地址被别的模块占），
+// 旧代码先置 hooked=true 就再也不重试了 —— 结果 eglSwapBuffers 永远不触发，
+// tick 死掉，整个模块跪掉（用户看到「UI 非常卡」）。
+// 现在：失败了保持 hooked=false，1 秒后重试（ui_touch / ui_ready 都会推动重试）。
+static long long InstallMs() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}
+
 void Install() {
     if (g_host.hooked) return;
-    g_host.hooked = true;
+
+    static long long lastTry = 0;
+    static int tries = 0;
+    const long long now = InstallMs();
+    if (lastTry && now - lastTry < 1000) return;   // 1 秒最多试一次
+    lastTry = now;
+
+    // 最多试 3 次。Dobby 对同一地址重复 hook 是会 abort 的，
+    // 不能无限抡；装不上就算了，至少游戏不受影响。
+    if (tries >= 3) {
+        if (tries == 3) { tries = 4; LOGE("Install gave up after 3 tries"); }
+        return;
+    }
+    tries++;
 
     uintptr_t base = elfu::MapsBase("libEGL.so");
     uintptr_t addr = base ? elfu::ElfSym(base, "eglSwapBuffers") : 0;
@@ -302,17 +330,18 @@ void Install() {
         if (h) addr = (uintptr_t)dlsym(h, "eglSwapBuffers");
     }
     if (!addr) {
-        LOGE("eglSwapBuffers not found (base=0x%lx)", (unsigned long)base);
+        LOGE("eglSwapBuffers not found (base=0x%lx), retry later", (unsigned long)base);
         return;
     }
     LOGI("eglSwapBuffers @ 0x%lx (libEGL base=0x%lx)", (unsigned long)addr, (unsigned long)base);
 
     int rc = DobbyHook((void*)addr, (void*)HookSwapBuffers, (void**)&g_host.origSwap);
-    LOGI("DobbyHook rc=%d orig=%p", rc, (void*)g_host.origSwap);
     if (rc != 0 || !g_host.origSwap) {
-        LOGE("hook failed");
-        g_host.broken = true;
+        LOGE("DobbyHook failed rc=%d orig=%p, retry later", rc, (void*)g_host.origSwap);
+        return;
     }
+    g_host.hooked = true;
+    LOGI("DobbyHook ok orig=%p", (void*)g_host.origSwap);
 }
 
 bool IsReady() { return g_host.inited; }
@@ -347,6 +376,7 @@ extern "C" __attribute__((visibility("default"))) void ui_set_fonts(const char* 
 }
 
 extern "C" __attribute__((visibility("default"))) int ui_ready(void) {
+    if (!g_host.hooked) Host::Install();   // 顺便推一把重试
     return Host::IsReady() ? 1 : 0;
 }
 
@@ -374,6 +404,9 @@ int ui_touch(int action, float x, float y, float viewW, float viewH) {
         g_host.viewW = (int)viewW;
         g_host.viewH = (int)viewH;
     }
+
+    // hook 还没装上就顺手重试（用户一摸屏幕就是一次机会）
+    if (!g_host.hooked) Host::Install();
 
     // 高位是 Java 侧编的指针索引（多指时 action | (i << 8)），
     // 不掩掉的话 switch 一个 case 都对不上，多指时面板直接不响应。

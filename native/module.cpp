@@ -1605,8 +1605,16 @@ static void refresh_status() {
 // =====================================================================
 
 static void tick_body() {
-    if (g_inTick) return;
+    if (g_inTick) {
+        // 上次进来没出去 = 卡住了。别无限沉默，报一下。
+        static int stuck = 0;
+        if (++stuck % 600 == 1) L("[PERF] tick 重入 %d 次，上一次可能卡死了", stuck);
+        return;
+    }
     g_inTick = 1;
+
+    struct timespec ts0;
+    clock_gettime(CLOCK_MONOTONIC, &ts0);
 
     if (g_t0 == 0) {
         g_t0 = now_ms();
@@ -1860,6 +1868,15 @@ static void tick_body() {
         }
     }
 
+    {
+        struct timespec ts1;
+        clock_gettime(CLOCK_MONOTONIC, &ts1);
+        const long long ns = (long long)(ts1.tv_sec - ts0.tv_sec) * 1000000000LL
+                           + (ts1.tv_nsec - ts0.tv_nsec);
+        // 超过 8ms 就报：60fps 是 16.6ms/帧，我们的逻辑吃掉一半就不正常了
+        if (ns > 8LL * 1000 * 1000) L("[PERF] tick 耗时 %.1fms", (double)ns / 1e6);
+    }
+
     refresh_status();   // 状态快照每帧刷一次，UI 侧随时能读
     g_inTick = 0;
 }
@@ -1871,12 +1888,15 @@ static void api_render_tick() {
 }
 
 extern "C" void native_tick() {
-    // Java 主线程。Unity 对象创建不能在这跑，所以让 render_tick 干。
-    // 兜底：UI so 没加载时 2 秒内没人调 render_tick，就自己在 Java 线程
-    // 跑一次 —— 至少状态机不会卡死（代价是那几步 Unity 调用可能崩）。
-    if (now_ms() - g_lastRenderTick > 2000) {
-        tick_body();
-    }
+    // Java 主线程。
+    //
+    // **不能在这里跑 tick_body**：里面全是 Unity 调用，在非 UnityMain 线程
+    // 碰 Unity 会和真正的 UnityMain 抢内部锁，表现是整进程卡死——
+    // build-164 实测：hook 没装上、走这个兜底，日志 17 分钟不写一行，
+    // UnityMain CPU 45% 在那儿转圈，用户看到的就是「UI 非常卡」。
+    //
+    // 这里只做纯数据的事（刷新状态快照），不碰任何 Unity 对象。
+    refresh_status();
 }
 
 // =====================================================================

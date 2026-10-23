@@ -457,6 +457,27 @@ void CameraCtrl::update() {
             camera_rebuild();
             return;
         }
+
+        // 游戏经常在 Update 里把它自己的主相机重新 enabled（很多游戏的
+        // 相机管理就是每帧 ensure）。那样就是两台全屏相机各渲染一遇
+        // → 帧率直接砍半，用户看到的就是「UI 很卡」。每 10 帧查一次。
+        static int enChk = 0;
+        if (++enChk % 10 == 1) {
+            void* mGetEn = uo::u_method(g_camClass, "get_enabled", 0);
+            if (mGetEn) {
+                void* r = uo::u_call(orig, mGetEn, nullptr);
+                const bool en = r ? (*(uint8_t*)((char*)r + 16)) != 0 : false;
+                if (en) {
+                    void* mSetEn = uo::u_method(g_camClass, "set_enabled", 1);
+                    if (mSetEn) {
+                        uint8_t v = 0;
+                        void* a[1] = { &v };
+                        uo::u_call_void(orig, mSetEn, a);
+                    }
+                    CLOG("[CAM] 游戏相机被重新 enable → 再关（双相机渲染会掉帧）");
+                }
+            }
+        }
     }
 
     const float dt = frame_dt();
@@ -527,9 +548,10 @@ void CameraCtrl::update() {
         euler_to_quat(yaw, pitch, q);
         write_cam_rot(transform, q);
 
-        // 每 60 帧打一次，实测时能直接看出「输入有没有进来、位置有没有变」
+        // 每 120 帧打一次，实测时能直接看出「输入有没有进来、位置有没有变」
+        // （60 太吵，每秒两条）
         static int flyBeat = 0;
-        if (++flyBeat % 60 == 1) {
+        if (++flyBeat % 120 == 1) {
             CLOG("[CAM] fly h=%.2f v=%.2f up=%d dn=%d bst=%d yaw=%.1f pitch=%.1f pos=(%.1f, %.1f, %.1f)",
                  h, v, (int)ascend, (int)descend, (int)boost,
                  yaw / kDeg2Rad, pitch / kDeg2Rad,
