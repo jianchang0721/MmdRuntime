@@ -343,6 +343,34 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
     if (mmd::build_materials(model, tex, mats, logf_cb)) {
         out.materials = mats.created;
         LLOG("[LOADER] materials=%d shader='%s'", mats.created, mats.shaderName);
+
+        // 关描边：白辉光就是它。
+        // 原角色材质的 shader 有 _OutlineColor（属性探测打出来的），我们从
+        // 同一个 shader 新建的材质默认值就是白色 → 整个模型被一圈白边包住，
+        // 看上去"发白 + 人发黑"。设成全透明。
+        {
+            Il2CppClass* mc = (Il2CppClass*)uo::u_class("UnityEngine", "Material");
+            void* mHas = mc ? uo::u_method_typed(mc, "HasProperty", 1, "String") : nullptr;
+            void* mSetCol = mc ? uo::u_method_typed(mc, "SetColor", 2, "String") : nullptr;
+            if (mSetCol) {
+                Il2CppString* key = g_api.string_new("_OutlineColor");
+                float zero[4] = {0, 0, 0, 0};
+                int n = 0;
+                for (void* mp : mats.items) {
+                    if (!mp) continue;
+                    bool has = true;
+                    if (mHas && key) {
+                        void* a[1] = { key };
+                        void* r = uo::u_call(mp, mHas, a);
+                        has = r ? (*(uint8_t*)((char*)r + 16)) != 0 : false;
+                    }
+                    if (!has) continue;
+                    void* a2[2] = { key, zero };
+                    if (uo::u_call_void(mp, mSetCol, a2)) n++;
+                }
+                LLOG("[MAT] _OutlineColor -> 全透明，%d 个材质", n);
+            }
+        }
         // 材质同样钉住（SMR 的 sharedMaterials 只是 managed 引用，native 侧
         // 的 m_Materials 是 PPtr，GC 收了就渲染不出）
         if (g_api.gchandle_new) {

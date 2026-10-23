@@ -1002,6 +1002,22 @@ static void census_and_anchor(bool force = false) {
                 void* arr2 = invoke(mBones, sib.obj, nullptr);
                 if (!arr2) continue;
                 const int32_t n2 = *(int32_t*)((char*)arr2 + 24);
+
+                // 诊断：这个兄弟 SMR 带来了哪些骨骼（只取前 3 根看命名规律）
+                {
+                    char samp[200] = {0};
+                    for (int32_t k = 0; k < n2 && k < 3; k++) {
+                        void* bt = *(void**)((char*)arr2 + 32 + (size_t)k * 8);
+                        char nm[64] = {0};
+                        if (bt) read_name(bt, mName, nm, sizeof(nm));
+                        char tmp[72];
+                        snprintf(tmp, sizeof(tmp), "%s%s", k ? "," : "", nm);
+                        strncat(samp, tmp, sizeof(samp) - strlen(samp) - 1);
+                    }
+                    L("[CENSUS]   +SMR '%s' bones=%d sample=[%s]",
+                      sib.name.c_str(), n2, samp);
+                }
+
                 for (int32_t k = 0; k < n2 && k < 512; k++) {
                     void* bt = *(void**)((char*)arr2 + 32 + (size_t)k * 8);
                     if (!bt) continue;
