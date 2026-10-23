@@ -324,7 +324,7 @@ void update() {
     {
         static int vBeat = 0;
         if (++vBeat % 120 == 1) {
-            Il2CppClass* meshCls = uo::u_class("UnityEngine", "Mesh");
+            Il2CppClass* meshCls = (Il2CppClass*)uo::u_class("UnityEngine", "Mesh");
             void* mGetV = meshCls ? uo::u_method(meshCls, "get_vertices", 0) : nullptr;
             void* back = mGetV ? uo::u_call(g_mesh, mGetV, nullptr) : nullptr;
             if (back) {
