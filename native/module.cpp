@@ -834,6 +834,21 @@ static void census_and_anchor(bool force = false) {
                 low[ln++] = (char)tolower((unsigned char)*p);
             low[ln] = 0;
             if (strstr(low, "player") || strstr(low, "hero") || strstr(low, "mainrole")) score += 200;
+
+            // 对象池排除。
+            //
+            // 游戏把没上场的模型全丢在 /VisualModelPool/VisualPool 下，
+            // 位置停在 (5000,5000,5000)。它们 activeInHierarchy 是 1
+            // （池子本身是激活的），但位置在角落、骨骼根本不更新 ——
+            // 之前"锚到对面角色"就是这个：锚中的是池里的模板。
+            //
+            // 实测（b175 那次）：
+            //   #7 '11013_Body' world=(5000,5000,5000) chain=/11013_Body/11013_U_1/VisualModelPool/VisualPool
+            //   #24 'Body'      world=(0,0,0)          chain=/Body/11021_U_1/EmptyObject   <- 场上的
+            if (strstr(low, "visualmodelpool") || strstr(low, "visualpool")) {
+                L("[CENSUS] #%zu '%s' 在对象池里 -> 排除", i, s.name.c_str());
+                continue;
+            }
         }
 
         // 骨骼名硬门槛：数一下有多少根骨骼是 'Bip001' / 'BN_' 开头的。
@@ -855,7 +870,9 @@ static void census_and_anchor(bool force = false) {
           wx, wy, wz, cx, cy, cz, shareAnc, chain);
 
         push_top((int)i, score);
-        if (s.boneCount >= 30 && score > bestScore) { bestScore = score; best = (int)i; }
+        // 门槛 30 -> 20：场上的玩家可能是 26 根的简化骨架（对象池里那些
+        // 完整模板反倒 66/73 根）。位置对了比骨骼多更重要。
+        if (s.boneCount >= 20 && score > bestScore) { bestScore = score; best = (int)i; }
     }
 
     // ---------------------------------------------------------------
