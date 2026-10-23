@@ -269,38 +269,36 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         if (sh) { mmd::set_shader_override(sh); LLOG("[MAT] 默认用游戏原材质 shader=%p", sh); }
         else    { LLOG("[MAT] 拿不到游戏 shader，退回 Shader.Find 链"); }
 
-        // 诊断：把 shader 的属性表全打出来。
-        // 「白辉光 + 人物发黑」通常是 shader 要的某个数据我们没给：
-        // 描边宽度 / 法线贴图 / 自发光 / 金属度。先看清楚它有哪些属性。
-        if (sh) {
-            Il2CppClass* shCls = (Il2CppClass*)uo::u_class("UnityEngine", "Shader");
-            void* mCnt  = shCls ? uo::u_method(shCls, "GetPropertyCount", 0) : nullptr;
-            void* mName = shCls ? uo::u_method_typed(shCls, "GetPropertyName", 1, "Int32") : nullptr;
-            void* mType = shCls ? uo::u_method_typed(shCls, "GetPropertyType", 1, "Int32") : nullptr;
-            if (mCnt) {
-                void* r = uo::u_call(sh, mCnt, nullptr);
-                const int tn = r ? *(int32_t*)((char*)r + 16) : 0;
-                LLOG("[MAT] shader 属性 %d 个", tn);
-                for (int i = 0; i < tn && i < 64; i++) {
-                    int32_t idx = i;
-                    void* a[1] = { &idx };
-                    char nm[96] = {0};
-                    void* str = mName ? uo::u_call(sh, mName, a) : nullptr;
-                    if (str) {
-                        const int32_t len = *(int32_t*)((char*)str + 16);
-                        const uint16_t* ch = (const uint16_t*)((char*)str + 20);
-                        int k = 0;
-                        for (int32_t j = 0; j < len && k < (int)sizeof(nm) - 1; j++)
-                            nm[k++] = (ch[j] < 0x80) ? (char)ch[j] : '?';
-                        nm[k] = 0;
-                    }
-                    int ty = -1;
-                    if (mType) {
-                        void* rt = uo::u_call(sh, mType, a);
-                        if (rt) ty = *(int32_t*)((char*)rt + 16);
-                    }
-                    LLOG("[MAT]   [%d] '%s' type=%d", i, nm, ty);
+        // 诊断：用原角色材质探常见属性名。
+        //
+        // 试过 Shader.GetPropertyCount/GetPropertyName，在 il2cpp 里
+        // 根本拿不到实例的属性表（是静态方法），日志一条都没出。
+        // 改用 Material.HasProperty(string) —— 实例方法，靠得住。
+        if (refMat && matCls) {
+            void* mHas = uo::u_method_typed(matCls, "HasProperty", 1, "String");
+            if (!mHas) mHas = uo::u_method(matCls, "HasProperty", 1);
+            if (mHas) {
+                static const char* cands[] = {
+                    "_MainTex", "_BumpMap", "_NormalMap", "_Outline", "_OutlineWidth",
+                    "_OutlineColor", "_OutlineScale", "_LineWidth",
+                    "_RimColor", "_RimPower", "_EmissionColor", "_EmissionMap",
+                    "_Color", "_Cutoff", "_Metallic", "_Glossiness", "_SpecColor",
+                    "_Shininess", "_ShadowColor", "_LightColor", "_AmbientColor",
+                    "_MatCap", "_MatCapTex", "_LightMap", "_CubeMap",
+                    "_Ramp", "_RampTex", "_ToonRamp", "_BaseColor", "_BaseMap",
+                };
+                int hit = 0;
+                for (const char* n : cands) {
+                    Il2CppString* ss = g_api.string_new(n);
+                    if (!ss) continue;
+                    void* a[1] = { ss };
+                    void* r = uo::u_call(refMat, mHas, a);
+                    const bool has = r ? (*(uint8_t*)((char*)r + 16)) != 0 : false;
+                    if (has) { LLOG("[MAT] 原材质有 '%s'", n); hit++; }
                 }
+                LLOG("[MAT] 属性探测命中 %d 个", hit);
+            } else {
+                LLOG("[MAT] 找不到 HasProperty，跳过属性探测");
             }
         }
     }
