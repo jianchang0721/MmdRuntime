@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "game/camera_ctrl.h"
+#include "game/cam_native.h"
 #include "game/cam_override.h"
 #include "game/smr_layout.h"
 #include "game/bone_names.h"
@@ -1218,10 +1219,20 @@ static void retarget_update() {
         }
         void* mt = load_ref().skeleton.transform_at(p.mmd);
         if (!gt || !mt) continue;
+        // 先调一次 managed getter：既能确认对象还活着（避免拿着野指针去读
+        // native 内存），也是 native 读失败时的兜底。
         void* q = invoke(sGetRot, gt, nullptr);
-        if (!q) continue;
+
+        // 旋转优先 native 直读。
+        // build-169 实测：managed get_rotation/get_position 在骨骼 Transform 上
+        // 读回来是一组恒定不动的值（用户走了也一样），而相机那边一直靠 native
+        // 直读才准。同一个 Transform 结构，骨骼没理由不一样。
         float quat[4];
-        memcpy(quat, (char*)q + 16, sizeof(quat));
+        const bool rotNat = game::cam_native::get_world_rot(gt, quat);
+        if (!rotNat) {
+            if (!q) continue;
+            memcpy(quat, (char*)q + 16, sizeof(quat));
+        }
 
         // bind pose 补偿：mmdWorldRot = gameWorldRot * offset
         if (p.offValid) {
@@ -1277,16 +1288,28 @@ static void retarget_update() {
 
             // 位置诊断：角色走动时 apos/ppos 必须变；mroot 应该跟着 apos 走。
             float ap[3] = {0, 0, 0}, pp[3] = {0, 0, 0}, mp[3] = {0, 0, 0};
-            void* apo = (g_anchorTr && sGetPos) ? invoke(sGetPos, g_anchorTr, nullptr) : nullptr;
-            if (apo) memcpy(ap, (char*)apo + 16, sizeof(ap));
-            void* ppo = (gt0 && sGetPos) ? invoke(sGetPos, gt0, nullptr) : nullptr;
-            if (ppo) memcpy(pp, (char*)ppo + 16, sizeof(pp));
+            bool apNat = false, ppNat = false;
+            if (g_anchorTr) {
+                apNat = game::cam_native::get_world_pos(g_anchorTr, ap);
+                if (!apNat && sGetPos) {
+                    void* apo = invoke(sGetPos, g_anchorTr, nullptr);
+                    if (apo) memcpy(ap, (char*)apo + 16, sizeof(ap));
+                }
+            }
+            if (gt0) {
+                ppNat = game::cam_native::get_world_pos(gt0, pp);
+                if (!ppNat && sGetPos) {
+                    void* ppo = invoke(sGetPos, gt0, nullptr);
+                    if (ppo) memcpy(pp, (char*)ppo + 16, sizeof(pp));
+                }
+            }
             void* mpo = (load_ref().modelRoot && sGetPos)
                         ? invoke(sGetPos, load_ref().modelRoot, nullptr) : nullptr;
             if (mpo) memcpy(mp, (char*)mpo + 16, sizeof(mp));
 
-            L("[RTDIAG] pairs=%zu g=(%.2f,%.2f,%.2f,%.2f) off=%d mmd=(%.2f,%.2f,%.2f,%.2f) apos=(%.1f,%.1f,%.1f) ppos=(%.1f,%.1f,%.1f) mroot=(%.1f,%.1f,%.1f)",
-              g_pairs.size(), qq[0], qq[1], qq[2], qq[3],
+            L("[RTDIAG] pairs=%zu rotNat=%d posNat=%d/%d g=(%.2f,%.2f,%.2f,%.2f) off=%d mmd=(%.2f,%.2f,%.2f,%.2f) apos=(%.1f,%.1f,%.1f) ppos=(%.1f,%.1f,%.1f) mroot=(%.1f,%.1f,%.1f)",
+              g_pairs.size(), (int)rotNat, (int)apNat, (int)ppNat,
+              qq[0], qq[1], qq[2], qq[3],
               (int)p0.offValid, out[0], out[1], out[2], out[3],
               ap[0], ap[1], ap[2], pp[0], pp[1], pp[2], mp[0], mp[1], mp[2]);
         }
