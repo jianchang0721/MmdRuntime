@@ -1003,10 +1003,15 @@ static void census_and_anchor(bool force = false) {
                 if (!arr2) continue;
                 const int32_t n2 = *(int32_t*)((char*)arr2 + 24);
 
-                // 诊断：这个兄弟 SMR 带来了哪些骨骼（只取前 3 根看命名规律）
+                // 诊断：这个兄弟 SMR 带来了哪些骨骼。
+                // 手/腿/头发这几个 SMR 用 Bone_* 命名，要照着这份名单补映射，
+                // 所以把它们全部打出来；其他只打前 3 根。
                 {
-                    char samp[200] = {0};
-                    for (int32_t k = 0; k < n2 && k < 3; k++) {
+                    const bool full = (sib.name.find("Shou") != std::string::npos ||
+                                       sib.name.find("Tui") != std::string::npos);
+                    char samp[900] = {0};
+                    const int32_t lim = full ? n2 : 3;
+                    for (int32_t k = 0; k < lim && k < n2; k++) {
                         void* bt = *(void**)((char*)arr2 + 32 + (size_t)k * 8);
                         char nm[64] = {0};
                         if (bt) read_name(bt, mName, nm, sizeof(nm));
@@ -1014,8 +1019,8 @@ static void census_and_anchor(bool force = false) {
                         snprintf(tmp, sizeof(tmp), "%s%s", k ? "," : "", nm);
                         strncat(samp, tmp, sizeof(samp) - strlen(samp) - 1);
                     }
-                    L("[CENSUS]   +SMR '%s' bones=%d sample=[%s]",
-                      sib.name.c_str(), n2, samp);
+                    L("[CENSUS]   +SMR '%s' bones=%d %s=[%s]",
+                      sib.name.c_str(), n2, full ? "all" : "sample", samp);
                 }
 
                 for (int32_t k = 0; k < n2 && k < 512; k++) {
@@ -1427,7 +1432,14 @@ static void retarget_update() {
             gt = g_anchorBones[(size_t)p.game].tr;   // 退回缓存
         }
         void* mt = load_ref().skeleton.transform_at(p.mmd);
-        if (!gt || !mt) continue;
+        if (!mt) {
+            static int missLog = 0;
+            if (missLog++ < 8) {
+                L("[RT] 跳过 '%s' -> '%s'（MMD Transform 为 null, mmd=%d）", p.g, p.m, p.mmd);
+            }
+            continue;
+        }
+        if (!gt) continue;
         // 先调一次 managed getter：既能确认对象还活着（避免拿着野指针去读
         // native 内存），也是 native 读失败时的兜底。
         void* q = invoke(sGetRot, gt, nullptr);
