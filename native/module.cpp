@@ -575,6 +575,16 @@ struct AnchorBone {
 };
 
 static std::vector<AnchorBone> g_anchorBones;
+
+// SMR native 里探测到的 m_BoneMatrices（每根骨骼一个 4x4，渲染用的那份）。
+// 为什么需要它：这个游戏的骨骼 Transform 被冻结在 bind 姿势 ——
+// get_rotation 读回来恒定不变，但 get_position 会跟着角色走。
+// 真正的动画数据在 GPU 蒙皮矩阵里，只能从这儿读。
+static void* g_boneMatrices  = nullptr;
+static int   g_boneMatricesN = 0;
+static int   g_primaryBoneN  = 0;   // 主 SMR 自己的骨骼数（合并前）
+static float g_boneBindRot[512][4];   // 锚定那一刻的蒙皮矩阵旋转（当 bind 用）
+static bool  g_boneBindValid = false;
 static void* g_anchorSmr   = nullptr;
 static void* g_anchorTr    = nullptr;   // Transform of the anchored character
 static int   g_anchorIdx   = -1;
@@ -636,6 +646,30 @@ static int count_known_bones(void* smr, const MethodInfo* mBones, const MethodIn
         if (strstr(nm, "Bip001") || strncmp(nm, "BN_", 3) == 0) cnt++;
     }
     return cnt;
+}
+
+// 从 SMR native 里探 m_BoneMatrices：一个指向「连续 Matrix4x4 数组」的指针，
+// 数组长度 = boneCount，每个矩阵的最后一行必须是 (0,0,0,1)。
+static void* find_bone_matrices(void* smrNative, int boneCount) {
+    if (!smrNative || boneCount <= 0 || boneCount > 512) return nullptr;
+    const int cands[] = { 0x1c0, 0x1c8, 0x1d0, 0x1d8, 0x1e0, 0x1e8,
+                          0x1f0, 0x1f8, 0x200, 0x208, 0x210, 0x218 };
+    for (int off : cands) {
+        void* base = *(void**)((char*)smrNative + off);
+        if (!base) continue;
+        float m0[16];
+        memcpy(m0, base, sizeof(m0));
+        if (fabsf(m0[3]) > 0.01f || fabsf(m0[7]) > 0.01f ||
+            fabsf(m0[11]) > 0.01f || fabsf(m0[15] - 1.0f) > 0.01f) continue;
+        if (boneCount > 1) {
+            float m1[16];
+            memcpy(m1, (char*)base + 64, sizeof(m1));
+            if (fabsf(m1[15] - 1.0f) > 0.01f) continue;
+        }
+        L("[BONES] boneMatrices @ smr+0x%x = %p（%d 根）", off, base, boneCount);
+        return base;
+    }
+    return nullptr;
 }
 
 static void build_retarget();   // defined below, called after a successful anchor
@@ -928,6 +962,31 @@ static void census_and_anchor(bool force = false) {
     g_anchorScore = bestScore;
     g_anchorSmr = g_smrs[(size_t)best].obj;
     g_anchorTr  = mGetTr ? invoke(mGetTr, g_anchorSmr, nullptr) : nullptr;
+
+    // ---- 探 m_BoneMatrices ----
+    // 这个游戏的骨骼 Transform 冻结在 bind（get_rotation 恒定），
+    // 真正的动画只在 GPU 蒙皮矩阵里。所以优先读那份。
+    g_boneMatrices  = nullptr;
+    g_boneMatricesN = 0;
+    g_boneBindValid = false;
+    g_primaryBoneN  = g_smrs[(size_t)best].boneCount;
+    {
+        void* nat = *(void**)((char*)g_anchorSmr + 16);
+        g_boneMatrices = find_bone_matrices(nat, g_primaryBoneN);
+        if (g_boneMatrices && g_primaryBoneN <= 512) {
+            g_boneMatricesN = g_primaryBoneN;
+            for (int i = 0; i < g_primaryBoneN; i++) {
+                float m[16];
+                memcpy(m, (char*)g_boneMatrices + (size_t)i * 64, sizeof(m));
+                const float r3[9] = { m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10] };
+                mat3_to_quat(r3, g_boneBindRot[i]);
+            }
+            g_boneBindValid = true;
+            L("[BONES] bind 旋转记录完成（%d 根）", g_primaryBoneN);
+        } else {
+            L("[BONES] 没探到 boneMatrices（primaryBones=%d）", g_primaryBoneN);
+        }
+    }
 
     void* arr = mBones ? invoke(mBones, g_anchorSmr, nullptr) : nullptr;
     if (!arr) { L("[ANCHOR] get_bones 返回空"); return; }
@@ -1323,11 +1382,36 @@ static void build_retarget() {
     // =================================================================
     {
         bool offOk = false;
-        if (g_anchorSmr) {
-            offOk = read_bind_rotations(g_anchorSmr, (int)g_anchorBones.size());
+
+        // ① 优先：boneMatrices 的 bind 旋转（锚定那一刻从渲染矩阵里记的）。
+        // 这条最靠谱 —— 骨骼 Transform 是冻结的，只有这份矩阵是真的在动。
+        if (g_boneBindValid && g_boneMatrices) {
+            int withOff = 0;
+            for (auto& p : g_pairs) {
+                if (p.game < 0 || p.game >= g_boneMatricesN) continue;
+                qinv(g_boneBindRot[p.game], p.off);
+                quat_norm(p.off);
+                p.offValid = true;
+                withOff++;
+            }
+            L("[RT] bind-offset（boneMatrices）算好 %d/%zu 对", withOff, g_pairs.size());
+            for (size_t i = 0; i < g_pairs.size() && i < 2; i++) {
+                if (!g_pairs[i].offValid) continue;
+                const float* gb = g_boneBindRot[g_pairs[i].game];
+                L("[RT]   '%s' bind=(%.2f,%.2f,%.2f,%.2f) off=(%.2f,%.2f,%.2f,%.2f)",
+                  g_pairs[i].g, gb[0], gb[1], gb[2], gb[3],
+                  g_pairs[i].off[0], g_pairs[i].off[1], g_pairs[i].off[2], g_pairs[i].off[3]);
+            }
+            offOk = (withOff > 0);
         }
+
+        // ② 退回：主 SMR 的 bindposes（只覆盖合并前那批）
+        if (!offOk && g_anchorSmr && g_primaryBoneN > 0) {
+            offOk = read_bind_rotations(g_anchorSmr, g_primaryBoneN);
+        }
+
+        // ③ 最后兜底：用当前姿势当 bind
         if (!offOk) {
-            // 降级：拿不到 bindposes 就把当前姿势当 bind（角色通常在站桩，误差可以接受）
             L("[RT] 降级：拿不到 bindposes，用当前姿势当参考");
             Il2CppClass* trCls = find_class_any("UnityEngine", "Transform");
             const MethodInfo* mGetRot = trCls ? find_method_any(trCls, "get_rotation") : nullptr;
@@ -1345,41 +1429,17 @@ static void build_retarget() {
             }
         }
 
-        if (offOk) {
-            Il2CppClass* trCls = find_class_any("UnityEngine", "Transform");
-            const MethodInfo* mGetRot = trCls ? find_method_any(trCls, "get_rotation") : nullptr;
-            // 样本：确认 MMD 骨骼起始确实是世界轴对齐（PMX 骨骼没有旋转字段，
-            // 自建 skeleton 局部旋转全是 identity，所以我们显式 set_rotation 的时候
-            // “bind” 就是 identity）
-            if (!g_pairs.empty()) {
-                void* mt0 = load_ref().skeleton.transform_at(g_pairs[0].mmd);
-                float mb[4] = {0, 0, 0, 1};
-                void* r = (mt0 && mGetRot) ? invoke(mGetRot, mt0, nullptr) : nullptr;
-                if (r) memcpy(mb, (char*)r + 16, 16);
-                L("[RT] MMD bind 样本 '%s' = (%.3f,%.3f,%.3f,%.3f)（期望近似 identity）",
-                  g_pairs[0].m, mb[0], mb[1], mb[2], mb[3]);
-            }
-
+        if (offOk && !g_pairs.empty() && !g_pairs[0].offValid) {
+            // 走的是 ②③：用 g_gameBindRot 填 offset
             int withOff = 0;
             for (auto& p : g_pairs) {
                 if (p.game < 0 || p.game >= g_gameBindRotN) continue;
-                // MMD 侧 bind = identity
-                // → offset = qinv(gameBind) * identity = qinv(gameBind)
                 qinv(g_gameBindRot[p.game], p.off);
                 quat_norm(p.off);
                 p.offValid = true;
                 withOff++;
             }
             L("[RT] bind-offset 算好 %d/%zu 对", withOff, g_pairs.size());
-            for (size_t i = 0; i < g_pairs.size() && i < 2; i++) {
-                if (!g_pairs[i].offValid) continue;
-                const float* gb = g_gameBindRot[g_pairs[i].game];
-                L("[RT]   '%s' gbind=(%.2f,%.2f,%.2f,%.2f) off=(%.2f,%.2f,%.2f,%.2f)",
-                  g_pairs[i].g, gb[0], gb[1], gb[2], gb[3],
-                  g_pairs[i].off[0], g_pairs[i].off[1], g_pairs[i].off[2], g_pairs[i].off[3]);
-            }
-        } else {
-            L("[RT] bind-offset 完全拿不到，退回直抄（模型会拧）");
         }
     }
 }
@@ -1428,20 +1488,30 @@ static void retarget_update() {
         }
         void* mt = load_ref().skeleton.transform_at(p.mmd);
         if (!gt || !mt) continue;
-        // 先调一次 managed getter：既能确认对象还活着（避免拿着野指针去读
-        // native 内存），也是 native 读失败时的兜底。
+        // 先调一次 managed getter：确认对象还活着，也是最后的兜底。
         void* q = invoke(sGetRot, gt, nullptr);
 
-        // 旋转优先 native 直读。
-        // build-169 实测：managed get_rotation/get_position 在骨骼 Transform 上
-        // 读回来是一组恒定不动的值（用户走了也一样），而相机那边一直靠 native
-        // 直读才准。同一个 Transform 结构，骨骼没理由不一样。
+        // 旋转读取三级优先：
+        //   ① boneMatrices —— 这个游戏的骨骼 Transform 冻结在 bind，真正的
+        //      动画只存在于 GPU 蒙皮矩阵里，这份一定是最新的
+        //   ② native 直读 Transform
+        //   ③ managed get_rotation
         float quat[4];
-        rotNat = game::cam_native::get_world_rot(gt, quat);
-        if (!rotNat) {
+        bool got = false;
+
+        if (g_boneMatrices && p.game < g_boneMatricesN) {
+            float m[16];
+            memcpy(m, (char*)g_boneMatrices + (size_t)p.game * 64, sizeof(m));
+            const float r3[9] = { m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10] };
+            mat3_to_quat(r3, quat);
+            got = true;
+        }
+        if (!got) got = game::cam_native::get_world_rot(gt, quat);
+        if (!got) {
             if (!q) continue;
             memcpy(quat, (char*)q + 16, sizeof(quat));
         }
+        rotNat = got;
 
         // bind pose 补偿：mmdWorldRot = gameWorldRot * offset
         if (p.offValid) {
