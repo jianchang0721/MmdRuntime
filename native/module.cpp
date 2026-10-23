@@ -2012,7 +2012,15 @@ Java_com_moss_mmdruntime_HookEntry_nativeCameraTouch(JNIEnv*, jclass,
                                                      jfloat vw, jfloat vh) {
     if (!game::g_camera.enabled) return JNI_FALSE;
 
-    const int base = action & 0xFF;
+    int base = action & 0xFF;
+
+    // 多指的第二根及以后，MotionEvent 给的是 ACTION_POINTER_DOWN(5) /
+    // ACTION_POINTER_UP(6)，不是 DOWN(0) / UP(1)。
+    // 不归一化的话：先按左半屏摇杆、再按右半屏想转视角 →
+    // 第二根手指直接进 default 分支还给游戏，双指永远玩不了。
+    if (base == 5) base = 0;        // ACTION_POINTER_DOWN -> DOWN
+    else if (base == 6) base = 1;   // ACTION_POINTER_UP   -> UP
+
     return game::camera_touch(base, (int)pointerId, x, y, vw, vh) ? JNI_TRUE : JNI_FALSE;
 }
 

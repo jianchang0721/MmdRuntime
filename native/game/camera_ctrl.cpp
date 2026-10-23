@@ -273,6 +273,35 @@ void camera_set_follow(void* charTransform) {
 int CameraCtrl::scan() {
     if (!bind_refs()) return 0;
 
+    // ---- 1) Camera.main 优先 ----
+    // 直接按 depth 挑会挑错：手游的 UI 相机（Screen Space - Camera 的 Canvas）
+    // depth 往往比主相机高，CopyFrom 它会把 cullingMask 抄成「只含 UI 层」，
+    // 场景全空。Camera.main 找的是 tag = MainCamera 的那个，才是主相机。
+    {
+        void* mMain = uo::u_method(g_camClass, "get_main", 0);
+        if (mMain) {
+            void* m = uo::u_call(nullptr, mMain, nullptr);
+            if (m && m != g_skipCam) {
+                bool en = true;
+                if (g_getEnabled) {
+                    Il2CppObject* boxed = (Il2CppObject*)uo::u_call(m, g_getEnabled, nullptr);
+                    if (boxed) en = (*(uint8_t*)((char*)boxed + 16)) != 0;
+                }
+                if (en) {
+                    Il2CppObject* mtr = (Il2CppObject*)uo::u_call(m, g_getTr, nullptr);
+                    if (mtr) {
+                        camera = m;
+                        transform = mtr;
+                        scanned = true;
+                        CLOG("[CAM] 主摄像机（Camera.main）cam=%p tr=%p", m, mtr);
+                        return 1;
+                    }
+                }
+            }
+        }
+        CLOG("[CAM] Camera.main 不可用，回退按 depth 挑");
+    }
+
     Il2CppReflectionType* t = g_api.type_get_object(g_api.class_get_type((Il2CppClass*)g_camClass));
     if (!t) { CLOG("[CAM] type_get_object 失败"); return 0; }
 
@@ -621,6 +650,11 @@ bool camera_touch(int action, int pointerId, float x, float y,
 // =====================================================================
 namespace {
 
+// 游戏原相机（被 freecam 关掉的那个）。rebuild 后要跟着换，
+// 否则下次关闭会把相机恢复到一个早就死了的指针上。
+void* s_gameCam = nullptr;
+void* s_gameTr  = nullptr;
+
 int s_rebuildFails = 0;
 
 void camera_rebuild() {
@@ -658,10 +692,13 @@ void camera_rebuild() {
         return;
     }
     s_rebuildFails = 0;
+    // 新 scan 到的就是新的游戏原相机（freecam::enable 已经把它关了）
+    s_gameCam = g_camera.camera;
+    s_gameTr  = g_camera.transform;
     g_camera.camera = freecam::camera();
     g_camera.transform = newTr;
-    CLOG("[CAM] rebuild OK: cam=%p tr=%p depth=%d",
-         g_camera.camera, g_camera.transform, freecam::depth());
+    CLOG("[CAM] rebuild OK: cam=%p tr=%p depth=%d (gameCam=%p)",
+         g_camera.camera, g_camera.transform, freecam::depth(), s_gameCam);
 }
 
 }  // namespace
@@ -673,10 +710,6 @@ namespace {
 int g_pendingEnable = -1;   // -1 = 没请求，0 = 关，1 = 开
 
 void do_enable_internal(bool want) {
-
-    // 游戏原相机（scan 结果），freecam 会把它关掉并把我们的相机顶上来
-    static void* s_gameCam = nullptr;
-    static void* s_gameTr  = nullptr;
 
     if (want) {
         if (g_camera.enabled) return;
