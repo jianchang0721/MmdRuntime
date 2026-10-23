@@ -283,6 +283,11 @@ int CameraStick(float* out) {
     return g_Api->camera_stick(out);
 }
 
+void CameraGetConfig(float* out) {
+    if (!Bind() || !g_Api->camera_get_config) return;
+    g_Api->camera_get_config(out);
+}
+
 void RenderTick() {
     if (Bind() && g_Api->render_tick) g_Api->render_tick();
 }

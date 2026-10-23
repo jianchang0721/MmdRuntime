@@ -2202,6 +2202,10 @@ static int api_camera_stick(float* out) {
     return game::camera_stick(out);
 }
 
+static void api_camera_get_config(float* out) {
+    game::camera_get_config(out);
+}
+
 extern "C" __attribute__((visibility("default")))
 const MmdApi* mmd_get_api(void) {
     static MmdApi api = {
@@ -2231,6 +2235,7 @@ const MmdApi* mmd_get_api(void) {
         api_camera_motion,
         api_camera_config,
         api_camera_stick,
+        api_camera_get_config,
     };
     static bool announced = false;
     if (!announced) {

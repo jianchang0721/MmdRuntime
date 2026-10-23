@@ -131,6 +131,10 @@ typedef struct MmdApi {
     // out[4]    = 摇杆半径（像素）
     // 返回 1 = 摇杆正在被推，0 = 没推（此时 out 不填）。
     int (*camera_stick)(float* out);
+
+    // 读当前相机参数。out[0]=速度 out[1]=灵敏度 out[2]=摇杆半径。
+    // UI 打开设置页时先拉一次，免得滑块默认值把配置文件的值推回去。
+    void (*camera_get_config)(float* out);
 } MmdApi;
 
 // 唯一导出符号

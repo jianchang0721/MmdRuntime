@@ -21,6 +21,7 @@
 
 #include <android/log.h>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <cstdint>
 #include <time.h>
@@ -59,6 +60,59 @@ void* g_skipCam = nullptr;
 
 // 锚定的角色 Transform（module.cpp 塞进来）
 void* g_followTr = nullptr;
+
+// ---- 参数持久化 ----
+// 存游戏自己的私有目录：只有游戏进程能读，root shell 也得走 /proc/<pid>/root。
+// 格式就是三行 key=value，手改也行。
+const char* kCamCfgPath = "/data/data/com.hermes.h1game/files/mmd_cam.cfg";
+bool        g_cfgDirty   = false;
+long long   g_cfgDirtyMs = 0;
+
+long long mono_now_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}
+
+float clampf(float v, float lo, float hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+void cam_cfg_load() {
+    FILE* f = fopen(kCamCfgPath, "r");
+    if (!f) {
+        CLOG("[CAM] cfg 无文件，用默认 speed=%.1f sens=%.2f radius=%.0f",
+             g_camera.flySpeed, g_camera.lookSens, g_camera.joyRadius);
+        return;
+    }
+    char line[128];
+    float sp = -1.0f, se = -1.0f, ra = -1.0f;
+    while (fgets(line, sizeof(line), f)) {
+        float v = -1.0f;
+        if (sscanf(line, "speed=%f", &v) == 1) sp = v;
+        else if (sscanf(line, "sens=%f", &v) == 1) se = v;
+        else if (sscanf(line, "radius=%f", &v) == 1) ra = v;
+    }
+    fclose(f);
+    if (sp > 0.0f) g_camera.flySpeed  = clampf(sp, 0.5f, 50.0f);
+    if (se > 0.0f) g_camera.lookSens  = clampf(se, 0.01f, 2.0f);
+    if (ra > 0.0f) g_camera.joyRadius = clampf(ra, 20.0f, 500.0f);
+    CLOG("[CAM] cfg loaded speed=%.2f sens=%.3f radius=%.0f",
+         g_camera.flySpeed, g_camera.lookSens, g_camera.joyRadius);
+}
+
+void cam_cfg_flush() {
+    if (!g_cfgDirty) return;
+    if (mono_now_ms() - g_cfgDirtyMs < 800) return;   // 拖滑条时别每帧写盘
+    g_cfgDirty = false;
+    FILE* f = fopen(kCamCfgPath, "w");
+    if (!f) { CLOG("[CAM] cfg 写 %s 失败", kCamCfgPath); return; }
+    fprintf(f, "speed=%.3f\nsens=%.4f\nradius=%.1f\n",
+            g_camera.flySpeed, g_camera.lookSens, g_camera.joyRadius);
+    fclose(f);
+    CLOG("[CAM] cfg saved speed=%.2f sens=%.3f radius=%.0f",
+         g_camera.flySpeed, g_camera.lookSens, g_camera.joyRadius);
+}
 
 bool g_refsReady = false;
 
@@ -817,6 +871,10 @@ void camera_set_enabled(int on) {
 }
 
 void camera_pump() {
+    static bool cfgLoaded = false;
+    if (!cfgLoaded) { cfgLoaded = true; cam_cfg_load(); }
+    cam_cfg_flush();
+
     // build-161：自动接管已撤（用户要求不要默认开），只在面板里手动启。
     if (g_pendingEnable < 0) return;
     const bool want = (g_pendingEnable != 0);
@@ -849,10 +907,19 @@ int camera_stick(float* out) {
     return 1;
 }
 
+void camera_get_config(float* out) {
+    if (!out) return;
+    out[0] = g_camera.flySpeed;
+    out[1] = g_camera.lookSens;
+    out[2] = g_camera.joyRadius;
+}
+
 void camera_set_config(float speed, float sens, float radius) {
     if (speed  > 0.0f)  { g_camera.flySpeed  = speed; }
     if (sens   > 0.0f)  { g_camera.lookSens  = sens; }
     if (radius > 0.0f)  { g_camera.joyRadius = radius; }
+    g_cfgDirty   = true;
+    g_cfgDirtyMs = mono_now_ms();
     // 夹一下，别让面板拖出离谱值
     if (g_camera.flySpeed  < 0.5f)   g_camera.flySpeed  = 0.5f;
     if (g_camera.flySpeed  > 50.0f)  g_camera.flySpeed  = 50.0f;

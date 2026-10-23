@@ -26,10 +26,11 @@ struct CameraCtrl {
     // ---- 灵魂出窍模式（用户 C# 参考实现）----
     // 本体不动，相机脱离角色自己飞；触摸我们自己吃，不指望游戏 Input Manager。
     bool  freeFly   = true;
-    float flySpeed  = 6.0f;      // 米/秒（摇杆满推）
+    float flySpeed  = 12.0f;     // 米/秒（摇杆满推）
     float boostMul  = 3.0f;      // 加速倍率
-    float lookSens  = 0.08f;     // 度/像素（0.15 划半屏就是 188°，太猛）
-    float joyRadius = 120.0f;    // 摇杆半径（像素）＝ 满推距离
+    float lookSens  = 0.30f;     // 度/像素
+    float joyRadius = 80.0f;     // 摇杆半径（像素）＝ 满推距离
+    // 上面三个会被 /data/data/com.hermes.h1game/files/mmd_cam.cfg 覆盖（如果文件在）
 
     bool  ascend  = false;
     bool  descend = false;
@@ -86,6 +87,8 @@ void camera_set_motion(int ascend, int descend, int boost);
 
 // 速度 / 灵敏度 / 摇杆半径（UI 调用）
 void camera_set_config(float speed, float sens, float radius);
+// 读当前值：out[0]=速度 out[1]=灵敏度 out[2]=摇杆半径
+void camera_get_config(float* out);
 
 // 摇杆状态（UI 画可视化圆）。返回 1 = 正在推。
 int camera_stick(float* out);

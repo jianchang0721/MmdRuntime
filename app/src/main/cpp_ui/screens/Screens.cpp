@@ -554,9 +554,9 @@ void DrawSettingsTab(Bridge::BridgeModel& Model) {
     static bool  camUp     = false;
     static bool  camDown   = false;
     static bool  camBoost  = false;
-    static float camSpeed  = 6.0f;
-    static float camSens   = 0.08f;
-    static float camRadius = 120.0f;
+    static float camSpeed  = 12.0f;
+    static float camSens   = 0.30f;
+    static float camRadius = 80.0f;
 
     // 每帧跟游戏侧对齐：UnityMain 那边建相机可能失败，
     // Toggle 不能一直骗人说自己开着。
@@ -580,10 +580,25 @@ void DrawSettingsTab(Bridge::BridgeModel& Model) {
         static float sentSens   = -1.0f;
         static float sentRadius = -1.0f;
 
+        // 首次进设置页：从 native 拉一次真值（它可能刚从 mmd_cam.cfg 读出来）。
+        // 不拉的话滑块拿硬编码默认值，一拖就把配置文件里的值覆盖了。
+        static bool camCfgPulled = false;
+        if (!camCfgPulled) {
+            camCfgPulled = true;
+            float cfg[3] = {camSpeed, camSens, camRadius};
+            Bridge::CameraGetConfig(cfg);
+            if (cfg[0] > 0.0f) camSpeed  = cfg[0];
+            if (cfg[1] > 0.0f) camSens   = cfg[1];
+            if (cfg[2] > 0.0f) camRadius = cfg[2];
+            sentSpeed  = camSpeed;
+            sentSens   = camSens;
+            sentRadius = camRadius;
+        }
+
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::SliderFloat("##camspd", &camSpeed, 1.0f, 30.0f, "飞行速度 %.1f m/s");
         ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SliderFloat("##camsens", &camSens, 0.02f, 0.30f, "视角灵敏度 %.2f 度/px");
+        ImGui::SliderFloat("##camsens", &camSens, 0.02f, 0.60f, "视角灵敏度 %.2f 度/px");
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::SliderFloat("##camrad", &camRadius, 40.0f, 300.0f, "摇杆半径 %.0f px");
 
