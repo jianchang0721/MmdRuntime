@@ -703,12 +703,12 @@ static void census_and_anchor(bool force = false) {
 
     // 前 5 名候选，出问题时一眼看得出该选谁、实际选了谁
     struct Cand { int idx; int score; };
-    Cand top[5] = {};
+    Cand top[10] = {};
     auto push_top = [&](int idx, int sc) {
         if (sc <= 0) return;
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 10; i++) {
             if (sc > top[i].score) {
-                for (int j = 4; j > i; j--) top[j] = top[j - 1];
+                for (int j = 9; j > i; j--) top[j] = top[j - 1];
                 top[i] = {idx, sc};
                 return;
             }
@@ -841,14 +841,38 @@ static void census_and_anchor(bool force = false) {
             score += known * 2;   // 认识得越多越可信
         }
 
-        L("[CENSUS] #%zu '%s' bones=%d known=%d active=%d world=(%.1f,%.1f,%.1f) cam=(%.2f,%.2f,%.2f) shareAnc=%d score=%d",
-          i, s.name.c_str(), s.boneCount, known, (int)active, wx, wy, wz, cx, cy, cz, shareAnc, score);
+        L("[CENSUS] #%zu '%s' bones=%d known=%d active=%d score=%d world=(%.1f,%.1f,%.1f) cam=(%.1f,%.1f,%.1f) anc=%d chain=%s",
+          i, s.name.c_str(), s.boneCount, known, (int)active, score,
+          wx, wy, wz, cx, cy, cz, shareAnc, chain);
 
         push_top((int)i, score);
         if (s.boneCount >= 30 && score > bestScore) { bestScore = score; best = (int)i; }
     }
 
-    for (int i = 0; i < 5 && top[i].score > 0; i++) {
+    // ---------------------------------------------------------------
+    // 手动指定锚点：<gamefiles>/mmd_pin 里放一个 SMR 索引（就是上面 [CENSUS] 打的 #N）。
+    // 优先级最高，跳过所有打分。自动选挑错了，或者想钉死某个角色时用它。
+    // 每次 census 都会读这个文件，想恢复自动就把它删掉。
+    // ---------------------------------------------------------------
+    {
+        FILE* pf = fopen("/data/data/com.hermes.h1game/files/mmd_pin", "r");
+        if (pf) {
+            int want = -1;
+            const int got = fscanf(pf, "%d", &want);
+            fclose(pf);
+            if (got == 1 && want >= 0 && want < (int)g_smrs.size()) {
+                L("[CENSUS] mmd_pin -> force anchor #%d '%s' bones=%d",
+                  want, g_smrs[(size_t)want].name.c_str(), g_smrs[(size_t)want].boneCount);
+                best = want;
+                bestScore = 9999;
+            } else {
+                L("[CENSUS] mmd_pin invalid (got=%d want=%d smr=%zu)",
+                  got, want, g_smrs.size());
+            }
+        }
+    }
+
+    for (int i = 0; i < 10 && top[i].score > 0; i++) {
         L("[CENSUS] TOP%d #%d '%s' score=%d", i + 1, top[i].idx,
           g_smrs[(size_t)top[i].idx].name.c_str(), top[i].score);
     }
