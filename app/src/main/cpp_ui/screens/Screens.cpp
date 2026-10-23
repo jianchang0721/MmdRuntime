@@ -556,7 +556,7 @@ void DrawSettingsTab(Bridge::BridgeModel& Model) {
     static bool  camBoost  = false;
     static float camSpeed  = 6.0f;
     static float camSens   = 0.08f;
-    static float camRadius = 180.0f;
+    static float camRadius = 120.0f;
 
     // 每帧跟游戏侧对齐：UnityMain 那边建相机可能失败，
     // Toggle 不能一直骗人说自己开着。

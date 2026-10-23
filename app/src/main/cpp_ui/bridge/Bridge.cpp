@@ -278,6 +278,11 @@ void CameraConfig(float speed, float sens, float radius) {
         g_Api->camera_config(speed, sens, radius);
 }
 
+int CameraStick(float* out) {
+    if (!Bind() || !g_Api->camera_stick) return 0;
+    return g_Api->camera_stick(out);
+}
+
 void RenderTick() {
     if (Bind() && g_Api->render_tick) g_Api->render_tick();
 }

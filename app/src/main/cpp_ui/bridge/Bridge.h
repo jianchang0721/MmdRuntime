@@ -104,6 +104,8 @@ void CameraReset();
 void CameraZoom(float delta);   // 相对量，正数拉远
 void CameraMotion(int ascend, int descend, int boost);   // 灵魂出窍：上升/下降/加速
 void CameraConfig(float speed, float sens, float radius); // 速度 / 灵敏度 / 摇杆半径
+// 摇杆状态：out[0..1]=圆心(View 坐标) out[2..3]=输入 out[4]=半径。返回 1 = 正在推。
+int  CameraStick(float* out);
 
 // 让游戏侧在 UnityMain 线程跑一帧（UI 的 eglSwapBuffers 里每帧调）
 void RenderTick();

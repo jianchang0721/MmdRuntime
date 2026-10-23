@@ -68,6 +68,7 @@ struct HostState {
     int       viewH    = 0;
     int       frames   = 0;
     bool      lastDown = false;
+    bool      touchOwned = false;   // 这个手势序列归面板（DOWN 落在面板里才开始）
     EGLBoolean (*origSwap)(EGLDisplay, EGLSurface) = nullptr;
 };
 
@@ -104,6 +105,9 @@ bool InitImGuiOnce(int w, int h) {
     io.DisplaySize = ImVec2((float)w, (float)h);
 
     Theme::Apply();
+    // 触摸屏点不准：把每个可交互控件的判定区往外扩 10px。
+    // ImGui 自己说明了：控件不排序，重叠时优先第一个，别设太大。
+    ImGui::GetStyle().TouchExtraPadding = ImVec2(10.0f, 10.0f);
     ImGuiRuntime::LoadFonts();    // 字体路径由 Java 侧 setFontPaths 提前喂好
 
     // 模板自带的那套配置/模块系统：Screens.cpp 里的「模块」页签靠它
@@ -143,6 +147,36 @@ bool InitImGuiOnce(int w, int h) {
     g_host.inited = true;
     LOGI("ImGui host ready %dx%d", w, h);
     return true;
+}
+
+// ---------------------------------------------------------------------
+// 相机摇杆可视化
+//
+// 画在 foreground drawlist 上：不吃触摸（hittest 不认它），并且在面板之上。
+// 坐标要跟触摸一致：camera_stick 给的是 decor View 坐标，
+// 用 MapX/MapY 换到 surface 坐标（两者不一定一样大）。
+// ---------------------------------------------------------------------
+void DrawCameraStick() {
+    float st[5];
+    if (Bridge::CameraStick(st) != 1) return;
+
+    const float kx = (g_host.viewW > 0 && g_host.surfW > 0)
+                     ? (float)g_host.surfW / (float)g_host.viewW : 1.0f;
+    const float ky = (g_host.viewH > 0 && g_host.surfH > 0)
+                     ? (float)g_host.surfH / (float)g_host.viewH : 1.0f;
+
+    const ImVec2 c(MapX(st[0]), MapY(st[1]));
+    const float r = st[4] * (kx + ky) * 0.5f;
+    if (r < 8.0f) return;
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    dl->AddCircle(c, r, IM_COL32(255, 255, 255, 55), 48, 3.0f);
+    dl->AddCircleFilled(c, r * 0.16f, IM_COL32(255, 255, 255, 24), 20);
+
+    // 屏幕 y 向下增大，moveInputY 已经翻成「+1 = 向上推」
+    const ImVec2 k(c.x + st[2] * r, c.y - st[3] * r);
+    dl->AddCircleFilled(k, r * 0.30f, IM_COL32(0x7C, 0x4D, 0xFF, 175), 28);
+    dl->AddCircle(k, r * 0.30f, IM_COL32(255, 255, 255, 130), 28, 2.0f);
 }
 
 // ---------------------------------------------------------------------
@@ -186,6 +220,9 @@ void RenderFrame(EGLDisplay dpy, EGLSurface surf) {
         ScreenManager::RenderCurrentScreen();
         Toast::Render();
     }
+
+    // 摇杆圆（画在最上层，不影响触摸判定）
+    DrawCameraStick();
 
     ImGui::Render();
 
@@ -338,8 +375,29 @@ int ui_touch(int action, float x, float y, float viewW, float viewH) {
         g_host.viewH = (int)viewH;
     }
 
-    bool eat = Host::WantsTouch(x, y);
+    // 高位是 Java 侧编的指针索引（多指时 action | (i << 8)），
+    // 不掩掉的话 switch 一个 case 都对不上，多指时面板直接不响应。
+    action &= 0xFF;
+
     if (!g_host.inited) return 0;
+
+    // 触摸归属：只有 DOWN 落在面板里才开始占用，之后的 MOVE 不管手指
+    // 漂到哪都跟着走。不然摇杆推着推着滑进面板区域 → MOVE 被 UI 抢走
+    // → 摇杆直接卡住。UP / CANCEL 释放。
+    // （ACTION_POINTER_DOWN = 5 也算一次新的按下）
+    const bool isDown = (action == 0 || action == 5);
+    bool eat;
+    if (isDown) {
+        eat = Host::WantsTouch(x, y);
+        if (eat) g_host.touchOwned = true;
+    } else {
+        eat = g_host.touchOwned;
+        if (action == 1 || action == 3 || action == 6) {
+            // ACTION_POINTER_UP 不能立刻释放（可能还有其他手指在拖面板），
+            // 保守点：只在真正的 UP/CANCEL 释放
+            if (action != 6) g_host.touchOwned = false;
+        }
+    }
 
     float sx = MapX(x);
     float sy = MapY(y);
@@ -347,10 +405,12 @@ int ui_touch(int action, float x, float y, float viewW, float viewH) {
     std::lock_guard<std::mutex> lock(g_InputMutex);
     switch (action) {
         case 0:  // ACTION_DOWN
+        case 5:  // ACTION_POINTER_DOWN（多指时第二根起是这个）
             g_Touches.push_back({0, sx, sy});
             g_host.lastDown = true;
             break;
         case 1:  // ACTION_UP
+        case 6:  // ACTION_POINTER_UP
             g_Touches.push_back({1, sx, sy});
             g_host.lastDown = false;
             break;

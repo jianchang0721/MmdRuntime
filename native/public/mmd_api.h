@@ -124,6 +124,13 @@ typedef struct MmdApi {
     void (*camera_motion)(int ascend, int descend, int boost);
     // 飞行速度(米/秒) / 视角灵敏度(度/像素) / 摇杆半径(像素)。传 <=0 表示不改。
     void (*camera_config)(float speed, float sens, float radius);
+
+    // 摇杆状态（UI 画可视化圆用）。
+    // out[0..1] = 圆心（decor View 坐标）
+    // out[2..3] = 输入 -1..1（y 轴：+1 = 向上推）
+    // out[4]    = 摇杆半径（像素）
+    // 返回 1 = 摇杆正在被推，0 = 没推（此时 out 不填）。
+    int (*camera_stick)(float* out);
 } MmdApi;
 
 // 唯一导出符号

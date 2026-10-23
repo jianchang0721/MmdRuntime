@@ -2198,6 +2198,10 @@ static void api_camera_config(float speed, float sens, float radius) {
     L("[API] camera_config(speed=%.2f sens=%.3f radius=%.0f)", speed, sens, radius);
 }
 
+static int api_camera_stick(float* out) {
+    return game::camera_stick(out);
+}
+
 extern "C" __attribute__((visibility("default")))
 const MmdApi* mmd_get_api(void) {
     static MmdApi api = {
@@ -2226,6 +2230,7 @@ const MmdApi* mmd_get_api(void) {
         api_cmd_init,
         api_camera_motion,
         api_camera_config,
+        api_camera_stick,
     };
     static bool announced = false;
     if (!announced) {

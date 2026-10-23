@@ -29,7 +29,7 @@ struct CameraCtrl {
     float flySpeed  = 6.0f;      // 米/秒（摇杆满推）
     float boostMul  = 3.0f;      // 加速倍率
     float lookSens  = 0.08f;     // 度/像素（0.15 划半屏就是 188°，太猛）
-    float joyRadius = 180.0f;    // 摇杆半径（像素）＝ 满推距离（100 在 2510 宽屏上太短，一碰就满速）
+    float joyRadius = 120.0f;    // 摇杆半径（像素）＝ 满推距离
 
     bool  ascend  = false;
     bool  descend = false;
@@ -86,5 +86,8 @@ void camera_set_motion(int ascend, int descend, int boost);
 
 // 速度 / 灵敏度 / 摇杆半径（UI 调用）
 void camera_set_config(float speed, float sens, float radius);
+
+// 摇杆状态（UI 画可视化圆）。返回 1 = 正在推。
+int camera_stick(float* out);
 
 }  // namespace game

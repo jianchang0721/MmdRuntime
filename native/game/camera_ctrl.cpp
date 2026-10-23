@@ -835,6 +835,20 @@ void camera_set_motion(int ascend, int descend, int boost) {
     g_camera.boost   = (boost   != 0);
 }
 
+int camera_stick(float* out) {
+    if (!g_camera.enabled || !g_camera.freeFly) return 0;
+    // 只在真按着的时候才给，不然 UI 会画个残留的圆
+    if (g_camera.moveFinger < 0) return 0;
+    if (out) {
+        out[0] = g_camera.moveOriginX;
+        out[1] = g_camera.moveOriginY;
+        out[2] = g_camera.moveInputX;
+        out[3] = g_camera.moveInputY;
+        out[4] = g_camera.joyRadius;
+    }
+    return 1;
+}
+
 void camera_set_config(float speed, float sens, float radius) {
     if (speed  > 0.0f)  { g_camera.flySpeed  = speed; }
     if (sens   > 0.0f)  { g_camera.lookSens  = sens; }

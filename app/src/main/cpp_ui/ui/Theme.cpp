@@ -24,8 +24,9 @@ static ThemePreset CurrentPreset = ThemePreset::DefaultPurple;
 namespace Sizes {
 const float WindowRounding = 18.0f;
 const float ChildRounding = 12.0f;
-const float ButtonHeight = 40.0f;
-const float InputHeight = 40.0f;
+// 手机上 40px 偏小（2510 宽的屏），按下去经常偏；抬到 46/46
+const float ButtonHeight = 46.0f;
+const float InputHeight = 46.0f;
 const float GameInputHeight = 42.0f;
 const float RowHeightMin = 66.0f;
 const float RowHeightMax = 82.0f;
@@ -34,13 +35,14 @@ const float SidebarMaxWidth = 230.0f;
 const float SidebarCompactWidth = 150.0f;
 const float MobileBreakpoint = 560.0f;
 const float IconSize = 20.0f;
-const ImVec2 SwitchSize = ImVec2(48.0f, 26.0f);
+const ImVec2 SwitchSize = ImVec2(58.0f, 34.0f);
 const float TitleBarHeight = 72.0f;
 }
 
 namespace Spacing {
-const ImVec2 FramePadding = ImVec2(14.0f, 9.0f);
-const ImVec2 ItemSpacing = ImVec2(12.0f, 10.0f);
+// 按钮/输入框/滑条的高度全靠这个：9 → 13 把每个控件抬到 ~50px
+const ImVec2 FramePadding = ImVec2(14.0f, 13.0f);
+const ImVec2 ItemSpacing = ImVec2(12.0f, 14.0f);
 const ImVec2 ItemInnerSpacing = ImVec2(10.0f, 7.0f);
 const float WindowSafeMargin = 32.0f;
 const float ComponentPadding = 14.0f;
