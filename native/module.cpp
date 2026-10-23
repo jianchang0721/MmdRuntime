@@ -1220,6 +1220,22 @@ static const struct { const char* g; const char* m; } kRetargetMap[] = {
     { "Bip001 L Toe0",    "\xE5\xB7\xA6\xE3\x81\xA4\xE3\x81\xBE\xE5\x85\x88" },// L toe
     { "Bip001 R Toe0",    "\xE5\x8F\xB3\xE3\x81\xA4\xE3\x81\xBE\xE5\x85\x88" },// R toe
 
+    // ---- 混合骨架补充 ----
+    // 实测这个游戏的手 / 腿 / 头发 SMR 用 Bone_* 命名，不是 Bip001：
+    //   +SMR 'Shou_R' bones=24 sample=[Bone_Rhand,Bone_Rfinger_10,Bone_Rfinger_01]
+    //   +SMR 'Tui_L'  bones=11 sample=[Bone_Lfoot_01,Bone_Lfoot_02,Bone_L_Leg01]
+    // 下面这些是确认能对上的；手指编号规律还没摸清，先不猜。
+    // 模型里没有的 MMD 骨骼会被 find_mmd_bone_by_name 跳过，加了无害。
+    { "Bone_Lhand",          "\xE5\xB7\xA6\xE6\x89\x8B\xE9\xA6\x96" },
+    { "Bone_Rhand",          "\xE5\x8F\xB3\xE6\x89\x8B\xE9\xA6\x96" },
+    { "Bone_L_Leg01",        "\xE5\xB7\xA6\xE8\xB6\xB3" },
+    { "Bone_R_Leg01",        "\xE5\x8F\xB3\xE8\xB6\xB3" },
+    { "Bone_Lfoot_01",       "\xE5\xB7\xA6\xE8\xB6\xB3\xE9\xA6\x96" },
+    { "Bone_Lfoot_02",       "\xE5\xB7\xA6\xE3\x81\xA4\xE3\x81\xBE\xE5\x85\x88" },
+    { "Bone_Rfoot_01",       "\xE5\x8F\xB3\xE8\xB6\xB3\xE9\xA6\x96" },
+    { "Bone_Rfoot_02",       "\xE5\x8F\xB3\xE3\x81\xA4\xE3\x81\xBE\xE5\x85\x88" },
+    { "Bip001 Spine2",       "\xE4\xB8\x8A\xE5\x8D\x8A\xE8\xBA\xAB\x33" },
+
     // ---- 手指 ----
     // Biped 命名规则：Finger0 = 拇指（0/01/02 三节），
     //                 Finger1..4 = 食指/中指/无名指/小指（各有 根/中/尖 三节）。
