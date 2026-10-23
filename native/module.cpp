@@ -583,6 +583,12 @@ static std::vector<AnchorBone> g_anchorBones;
 static void* g_boneMatrices  = nullptr;
 static int   g_boneMatricesN = 0;
 static int   g_primaryBoneN  = 0;   // 主 SMR 自己的骨骼数（合并前）
+
+// 定义在下面 RetargetPair 那一块，census 里用得到，先声明
+static void qmul(const float a[4], const float b[4], float out[4]);
+static void qinv(const float q[4], float out[4]);
+static void quat_norm(float q[4]);
+static void mat3_to_quat(const float m[9], float q[4]);
 static float g_boneBindRot[512][4];   // 锚定那一刻的蒙皮矩阵旋转（当 bind 用）
 static bool  g_boneBindValid = false;
 static void* g_anchorSmr   = nullptr;
