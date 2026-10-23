@@ -367,6 +367,26 @@ void update() {
         }
     }
 
+    // 诊断：到底有多少根骨骼被翻译层驱动、第一根的旋转/蒙皮矩阵长什么样。
+    // 模型全程 T-pose 的话，这里 driven 会是 0 或者 q 是 identity。
+    {
+        static int dBeat = 0;
+        if (++dBeat % 300 == 1) {
+            int driven = 0, first = -1;
+            for (int i = 0; i < g_nBones; i++) {
+                if (g_hasRot[(size_t)i]) { driven++; if (first < 0) first = i; }
+            }
+            if (first >= 0) {
+                const float* q = &g_worldRot[(size_t)first * 4];
+                const float* m = &g_skin[(size_t)first * 12];
+                SLOG("[SKIN] driven=%d/%d first=%d q=(%.2f,%.2f,%.2f,%.2f) m=(%.2f,%.2f,%.2f,%.2f)",
+                     driven, g_nBones, first, q[0], q[1], q[2], q[3], m[0], m[1], m[2], m[3]);
+            } else {
+                SLOG("[SKIN] driven=0/%d  一根都没被驱动 —— 模型只能是 T-pose", g_nBones);
+            }
+        }
+    }
+
     g_lastUs = (int)(now_us() - t0);
     g_updateCount++;
     if (g_updateCount % 120 == 1) {
