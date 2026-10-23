@@ -599,6 +599,23 @@ static float vec3_get(void* boxed, int idx) {
     return ((float*)((char*)boxed + 16))[idx];
 }
 
+// Transform 往上 6 层拼成 /a/b/c（父链名）。
+// census 打分和"同一角色多 SMR 合并"都要用。
+static void read_chain(void* tr, const MethodInfo* mParent, const MethodInfo* mName,
+                       char* out, int cap) {
+    out[0] = 0;
+    if (!tr || !mName) return;
+    int off = 0;
+    void* t = tr;
+    for (int k = 0; k < 6 && t; k++) {
+        char nm[64];
+        read_name(t, mName, nm, sizeof(nm));
+        if (nm[0] && off < cap - 72)
+            off += snprintf(out + off, cap - off, "/%s", nm);
+        t = mParent ? invoke(mParent, t, nullptr) : nullptr;
+    }
+}
+
 // 这套游戏的角色骨架只有两种命名：3ds Max Biped 的 'Bip001 ...' 和 'BN_...'。
 // 其他对象（特效、宠物、道具、其他玩家的特殊模型）骨骼名是 'Bone41' 之类，
 // 还退一个名字都认不出来 —— 直接排除，别让相机距离分把它们送上来。
@@ -816,18 +833,8 @@ static void census_and_anchor(bool force = false) {
         // PlayerRoot / Player / Hero node. A "player" hit is worth more than
         // every geometric signal combined.
         char chain[320];
+        read_chain(tr, mParent, mName, chain, sizeof(chain));
         {
-            int off = 0;
-            chain[0] = 0;
-            void* t = tr;
-            for (int k = 0; k < 6 && t; k++) {
-                char nm[64];
-                read_name(t, mName, nm, sizeof(nm));
-                if (nm[0] && off < (int)sizeof(chain) - 72)
-                    off += snprintf(chain + off, sizeof(chain) - off, "/%s", nm);
-                t = mParent ? invoke(mParent, t, nullptr) : nullptr;
-            }
-
             char low[320];
             int ln = 0;
             for (const char* p = chain; *p && ln < (int)sizeof(low) - 1; p++)
@@ -943,6 +950,84 @@ static void census_and_anchor(bool force = false) {
         g_anchorBones.push_back(b);
     }
     L("[ANCHOR] done: %zu bones pinned", g_anchorBones.size());
+
+    // ---------------------------------------------------------------
+    // 合并同一角色的兄弟 SMR 骨骼。
+    //
+    // 这个游戏把一个角色拆成多个 SMR：
+    //   /Body/11021_U_1  26 根   /Body_a/11021_U_1  28 根
+    //   /Shou_L/11021_U_1 2 根   /Tui_R/11021_U_1   2 根  ...
+    // 每个 SMR 的 bones 数组只装自己那部分骨骼，所以只锚 Body 就是缺手缺腿
+    // （实测 11/51 对，game missing 40）。
+    //
+    // 用父链里的「角色实例名」（如 11021_U_1）做匹配，把同一实例下所有
+    // SMR 的骨骼并进来，按名字去重。
+    // ---------------------------------------------------------------
+    if (mBones && mName && mParent && mGetTr && g_anchorTr) {
+        char mainChain[320];
+        read_chain(g_anchorTr, mParent, mName, mainChain, sizeof(mainChain));
+
+        char key[64] = {0};
+        {
+            const char* p = mainChain;
+            int slash = 0;
+            while (*p) {
+                if (*p == '/') {
+                    slash++;
+                    if (slash == 2) {
+                        const char* q = p + 1;
+                        int k = 0;
+                        while (*q && *q != '/' && k < (int)sizeof(key) - 1) key[k++] = *q++;
+                        key[k] = 0;
+                        break;
+                    }
+                }
+                p++;
+            }
+        }
+
+        if (key[0]) {
+            int merged = 0;
+            for (size_t j = 0; j < g_smrs.size(); j++) {
+                if ((int)j == best) continue;
+                SmrInfo& sib = g_smrs[j];
+                if (!sib.obj || !sib.native) continue;
+
+                void* st = invoke(mGetTr, sib.obj, nullptr);
+                if (!st) continue;
+                char sc[320];
+                read_chain(st, mParent, mName, sc, sizeof(sc));
+                if (!strstr(sc, key)) continue;
+
+                void* arr2 = invoke(mBones, sib.obj, nullptr);
+                if (!arr2) continue;
+                const int32_t n2 = *(int32_t*)((char*)arr2 + 24);
+                for (int32_t k = 0; k < n2 && k < 512; k++) {
+                    void* bt = *(void**)((char*)arr2 + 32 + (size_t)k * 8);
+                    if (!bt) continue;
+                    char nm[64];
+                    read_name(bt, mName, nm, sizeof(nm));
+                    if (!nm[0]) continue;
+                    bool dup = false;
+                    for (size_t q = 0; q < g_anchorBones.size(); q++) {
+                        if (strcmp(g_anchorBones[q].name, nm) == 0) { dup = true; break; }
+                    }
+                    if (dup) continue;
+                    AnchorBone b;
+                    b.tr = bt;
+                    void* r = mId ? invoke(mId, bt, nullptr) : nullptr;
+                    b.id = r ? *(int32_t*)((char*)r + 16) : 0;
+                    snprintf(b.name, sizeof(b.name), "%s", nm);
+                    if (g_api.gchandle_new) b.handle = g_api.gchandle_new((Il2CppObject*)bt, true);
+                    g_anchorBones.push_back(b);
+                    merged++;
+                }
+            }
+            L("[CENSUS] 角色实例 '%s'：合并兄弟 SMR 骨骼 %d 根，总 %zu 根",
+              key, merged, g_anchorBones.size());
+        }
+    }
+
     build_retarget();   // anchor changed -> rebuild the Bip001 -> MMD map
 }
 
