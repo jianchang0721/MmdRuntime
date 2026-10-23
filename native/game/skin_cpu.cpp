@@ -317,6 +317,32 @@ void update() {
     void* a[1] = { g_arr };
     uo::u_call_void(g_mesh, mSetVertices, a);
 
+    // 读回验证：mesh 里到底有没有新顶点。
+    // 上面那个 v0 是从 CPU 缓冲打的，只能证明"算对了"，不能证明"上传了"。
+    // 如果这里读回来还是 bind pose 的值，就说明 set_vertices 没生效（或者
+    // 改的根本不是渲染用的那个 mesh）。
+    {
+        static int vBeat = 0;
+        if (++vBeat % 120 == 1) {
+            Il2CppClass* meshCls = uo::u_class("UnityEngine", "Mesh");
+            void* mGetV = meshCls ? uo::u_method(meshCls, "get_vertices", 0) : nullptr;
+            void* back = mGetV ? uo::u_call(g_mesh, mGetV, nullptr) : nullptr;
+            if (back) {
+                const int32_t n = *(int32_t*)((char*)back + 24);
+                const float* v = (const float*)((char*)back + 32);
+                const bool match = (n == g_nVerts) &&
+                    fabsf(v[0] - out[0]) < 1e-3f &&
+                    fabsf(v[1] - out[1]) < 1e-3f &&
+                    fabsf(v[2] - out[2]) < 1e-3f;
+                SLOG("[SKIN] mesh readback n=%d v0=(%.3f,%.3f,%.3f) want=(%.3f,%.3f,%.3f)%s",
+                     n, v[0], v[1], v[2], out[0], out[1], out[2],
+                     match ? " MATCH" : " <-- 没上传到 mesh!");
+            } else {
+                SLOG("[SKIN] mesh readback: get_vertices 返回 null");
+            }
+        }
+    }
+
     if (mSetNormals && g_normArr) {
         void* an[1] = { g_normArr };
         uo::u_call_void(g_mesh, mSetNormals, an);
