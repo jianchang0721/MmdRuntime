@@ -1201,6 +1201,9 @@ static void retarget_update() {
     }
     if (!sGetRot || !sSetRot) return;
 
+    // 这一帧骨骼旋转是不是从 native 直读拿到的（RTDIAG 要打）
+    bool rotNat = false;
+
     // 每帧重新拿一次骨骼数组。
     // 游戏的对象池会重建 SMR 的 bones，缓存的 Transform 可能指向已经停用
     // 的旧对象 —— 表现就是模型挂着但摆着不动（这是 21 对全死的最可能原因）。
@@ -1228,7 +1231,7 @@ static void retarget_update() {
         // 读回来是一组恒定不动的值（用户走了也一样），而相机那边一直靠 native
         // 直读才准。同一个 Transform 结构，骨骼没理由不一样。
         float quat[4];
-        const bool rotNat = game::cam_native::get_world_rot(gt, quat);
+        rotNat = game::cam_native::get_world_rot(gt, quat);
         if (!rotNat) {
             if (!q) continue;
             memcpy(quat, (char*)q + 16, sizeof(quat));
