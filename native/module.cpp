@@ -598,9 +598,46 @@ static float vec3_get(void* boxed, int idx) {
     return ((float*)((char*)boxed + 16))[idx];
 }
 
+// 这套游戏的角色骨架只有两种命名：3ds Max Biped 的 'Bip001 ...' 和 'BN_...'。
+// 其他对象（特效、宠物、道具、其他玩家的特殊模型）骨骼名是 'Bone41' 之类，
+// 还退一个名字都认不出来 —— 直接排除，别让相机距离分把它们送上来。
+// 实测：build-164 里自由相机飞到别处后点初始化，锚到了 'Bone41'，
+// 配对只剩 13 对，模型完全不动。
+static int count_known_bones(void* smr, const MethodInfo* mBones, const MethodInfo* mName) {
+    if (!smr || !mBones || !mName) return 0;
+    void* arr = invoke(mBones, smr, nullptr);
+    if (!arr) return 0;
+    const int32_t n = *(int32_t*)((char*)arr + 24);
+    if (n <= 0 || n > 1024) return 0;
+    int cnt = 0;
+    for (int32_t k = 0; k < n; k++) {
+        void* bt = *(void**)((char*)arr + 32 + (size_t)k * 8);
+        if (!bt) continue;
+        char nm[64];
+        read_name(bt, mName, nm, sizeof(nm));
+        if (strstr(nm, "Bip001") || strncmp(nm, "BN_", 3) == 0) cnt++;
+    }
+    return cnt;
+}
+
 static void build_retarget();   // defined below, called after a successful anchor
 
-static void census_and_anchor() {
+static void census_and_anchor(bool force = false) {
+    // 已经锤定过、对象还活着（native 指针非空）→ 不重选。
+    // 否则“开自由相机飞一圈再重扫”就会把锚点换到别的对象上去。
+    // 要换锚点就写 mmd_recensus 文件（走 force 路径）。
+    if (!force && g_anchorSmr && !g_anchorBones.empty()) {
+        void* nat = *(void**)((char*)g_anchorSmr + 16);
+        if (nat) {
+            const char* nm = (g_anchorIdx >= 0 && g_anchorIdx < (int)g_smrs.size())
+                             ? g_smrs[(size_t)g_anchorIdx].name.c_str() : "?";
+            L("[CENSUS] 已有锚点 '%s'（%zu 根，score=%d），跳过重选",
+              nm, g_anchorBones.size(), g_anchorScore);
+            return;
+        }
+        L("[CENSUS] 已有锚点已失效（native=%p），重新选", nat);
+    }
+
     Il2CppClass* trCls   = find_class_any("UnityEngine", "Transform");
     Il2CppClass* objCls  = find_class_any("UnityEngine", "Object");
     Il2CppClass* compCls = find_class_any("UnityEngine", "Component");
@@ -652,6 +689,21 @@ static void census_and_anchor() {
 
     // ---- 遍历所有 SMR ----
     int best = -1, bestScore = 0;
+
+    // 前 5 名候选，出问题时一眼看得出该选谁、实际选了谁
+    struct Cand { int idx; int score; };
+    Cand top[5] = {};
+    auto push_top = [&](int idx, int sc) {
+        if (sc <= 0) return;
+        for (int i = 0; i < 5; i++) {
+            if (sc > top[i].score) {
+                for (int j = 4; j > i; j--) top[j] = top[j - 1];
+                top[i] = {idx, sc};
+                return;
+            }
+        }
+    };
+
     for (size_t i = 0; i < g_smrs.size(); i++) {
         SmrInfo& s = g_smrs[i];
         // 池子里的死对象：native 为空、或者骨骼数异常的直接跳（build-143 实测：
@@ -713,10 +765,13 @@ static void census_and_anchor() {
         // plain boolean test is useless -- #3 Body scored 60 without ever being
         // in front of the camera. Score by distance instead: the character the
         // camera follows is the nearest one in front.
+        // 相机距离分：build-164 之前是 400-12d，这一项就压过了其他所有信号，
+        // 导致自由相机飞远后锚到别的对象。降到 150-6d，它仍然能区分“身前/身后/
+        // 远近”，但不再一枝独大；真正决定性的信号是父链交集和骨骼名。
         if (cz < -0.5f) {
             const float d = -cz;
-            int bonus = (int)(400.0f - d * 12.0f);
-            if (bonus < 5) bonus = 5;
+            int bonus = (int)(150.0f - d * 6.0f);
+            if (bonus < 3) bonus = 3;
             score += bonus;
         } else {
             score -= 50;   // behind the camera
@@ -761,10 +816,30 @@ static void census_and_anchor() {
             if (strstr(low, "player") || strstr(low, "hero") || strstr(low, "mainrole")) score += 200;
         }
 
-        L("[CENSUS] #%zu '%s' bones=%d active=%d world=(%.1f,%.1f,%.1f) cam=(%.2f,%.2f,%.2f) shareAnc=%d score=%d",
-          i, s.name.c_str(), s.boneCount, (int)active, wx, wy, wz, cx, cy, cz, shareAnc, score);
+        // 骨骼名硬门槛：数一下有多少根骨骼是 'Bip001' / 'BN_' 开头的。
+        // 对不上就一根都不是，再近也不能当玩家角色。
+        // 只对分数已经像样的候选付这个开销（每根骨骼一次 invoke）。
+        int known = -1;
+        if (score >= 40) {
+            known = count_known_bones(s.obj, mBones, mName);
+            if (known < 5) {
+                L("[CENSUS] #%zu '%s' score=%d 但只有 %d 根认识的骨骼 -> 排除",
+                  i, s.name.c_str(), score, known);
+                continue;
+            }
+            score += known * 2;   // 认识得越多越可信
+        }
 
+        L("[CENSUS] #%zu '%s' bones=%d known=%d active=%d world=(%.1f,%.1f,%.1f) cam=(%.2f,%.2f,%.2f) shareAnc=%d score=%d",
+          i, s.name.c_str(), s.boneCount, known, (int)active, wx, wy, wz, cx, cy, cz, shareAnc, score);
+
+        push_top((int)i, score);
         if (s.boneCount >= 30 && score > bestScore) { bestScore = score; best = (int)i; }
+    }
+
+    for (int i = 0; i < 5 && top[i].score > 0; i++) {
+        L("[CENSUS] TOP%d #%d '%s' score=%d", i + 1, top[i].idx,
+          g_smrs[(size_t)top[i].idx].name.c_str(), top[i].score);
     }
 
     if (best < 0) {
@@ -816,7 +891,133 @@ static void census_and_anchor() {
 // Table order must be top-down (parent before child) because setting a
 // parent's world rotation moves its children.
 // =====================================================================
-struct RetargetPair { int game; int mmd; const char* g; const char* m; };
+// =====================================================================
+// 四元数小工具（Unity 顺序 x,y,z,w）
+// =====================================================================
+static void qmul(const float a[4], const float b[4], float out[4]) {
+    const float x = a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1];
+    const float y = a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0];
+    const float z = a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3];
+    const float w = a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2];
+    out[0] = x; out[1] = y; out[2] = z; out[3] = w;
+}
+static void qinv(const float q[4], float out[4]) {
+    out[0] = -q[0]; out[1] = -q[1]; out[2] = -q[2]; out[3] = q[3];
+}
+static void quat_norm(float q[4]) {
+    const float n = sqrtf(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
+    if (n < 1e-6f) { q[0] = q[1] = q[2] = 0.0f; q[3] = 1.0f; return; }
+    q[0] /= n; q[1] /= n; q[2] /= n; q[3] /= n;
+}
+// 行主序 3x3 -> 四元数
+static void mat3_to_quat(const float m[9], float q[4]) {
+    const float tr = m[0] + m[4] + m[8];
+    if (tr > 0.0f) {
+        const float s = sqrtf(tr + 1.0f) * 2.0f;
+        q[3] = 0.25f * s;
+        q[0] = (m[7] - m[5]) / s;
+        q[1] = (m[2] - m[6]) / s;
+        q[2] = (m[3] - m[1]) / s;
+    } else if (m[0] > m[4] && m[0] > m[8]) {
+        const float s = sqrtf(1.0f + m[0] - m[4] - m[8]) * 2.0f;
+        q[3] = (m[7] - m[5]) / s;
+        q[0] = 0.25f * s;
+        q[1] = (m[1] + m[3]) / s;
+        q[2] = (m[2] + m[6]) / s;
+    } else if (m[4] > m[8]) {
+        const float s = sqrtf(1.0f + m[4] - m[0] - m[8]) * 2.0f;
+        q[3] = (m[2] - m[6]) / s;
+        q[0] = (m[1] + m[3]) / s;
+        q[1] = 0.25f * s;
+        q[2] = (m[5] + m[7]) / s;
+    } else {
+        const float s = sqrtf(1.0f + m[8] - m[0] - m[4]) * 2.0f;
+        q[3] = (m[3] - m[1]) / s;
+        q[0] = (m[2] + m[6]) / s;
+        q[1] = (m[5] + m[7]) / s;
+        q[2] = 0.25f * s;
+    }
+    quat_norm(q);
+}
+
+// 游戏侧每根骨骼在 bind 时的世界旋转（从 bindposes 反算）
+static float g_gameBindRot[512][4];
+static int   g_gameBindRotN = 0;
+
+// 读 SkinnedMeshRenderer.sharedMesh.bindposes，算出每根骨骼 bind 时的世界旋转。
+//
+// Unity 约定：bindposes[i] 把 mesh 空间变到骨骼空间（bind 时刻），所以
+//     骨骼bind世界矩阵 = renderer世界矩阵 * bindposes[i]⁻¹
+// 旋转部分：R = R_renderer * R_bpᵀ
+//
+// 矩阵在 il2cpp 里是值类型，数组元素内联（Matrix4x4 = 16 float = 64 字节），
+// 而且 Unity 的 Matrix4x4 是列主序：raw[col*4 + row]。
+// 所以左上 3x3 的转置按行主序读就是 raw 的 {0,1,2, 4,5,6, 8,9,10}。
+static bool read_bind_rotations(const SmrInfo& info, int boneCount) {
+    if (!info.meshObj || boneCount <= 0 || boneCount > 512) {
+        L("[RT] bindposes 读取跳过（mesh=%p bones=%d）", info.meshObj, boneCount);
+        return false;
+    }
+    Il2CppClass* meshCls = find_class_any("UnityEngine", "Mesh");
+    if (!meshCls) return false;
+    const MethodInfo* mBp = find_method_any(meshCls, "get_bindposes");
+    if (!mBp) { L("[RT] Mesh.get_bindposes 缺失"); return false; }
+
+    void* arr = invoke(mBp, info.meshObj, nullptr);
+    if (!arr) { L("[RT] get_bindposes 返回 null"); return false; }
+    const int32_t n = *(int32_t*)((char*)arr + 24);
+    if (n < boneCount) {
+        L("[RT] bindposes 数量不足 %d < %d", n, boneCount);
+        return false;
+    }
+
+    // renderer 自身的世界旋转（bindpose 是相对它的）
+    float qR[4] = {0, 0, 0, 1};
+    {
+        Il2CppClass* compCls = find_class_any("UnityEngine", "Component");
+        Il2CppClass* trCls   = find_class_any("UnityEngine", "Transform");
+        const MethodInfo* mGetTr  = compCls ? find_method_any(compCls, "get_transform") : nullptr;
+        const MethodInfo* mGetRot = trCls   ? find_method_any(trCls, "get_rotation") : nullptr;
+        void* tr = (mGetTr && info.obj) ? invoke(mGetTr, info.obj, nullptr) : nullptr;
+        void* r  = (tr && mGetRot) ? invoke(mGetRot, tr, nullptr) : nullptr;
+        if (r) memcpy(qR, (char*)r + 16, sizeof(qR));
+        quat_norm(qR);
+    }
+
+    char* base = (char*)arr + 32;
+    for (int i = 0; i < boneCount; i++) {
+        float raw[16];
+        memcpy(raw, base + (size_t)i * 64, sizeof(raw));
+        if (fabsf(raw[15] - 1.0f) > 0.01f || fabsf(raw[12]) > 1e5f) {
+            L("[RT] bindposes 格式不对 #%d raw[15]=%.3f raw[12]=%.1f，放弃",
+              i, raw[15], raw[12]);
+            return false;
+        }
+        const float m[9] = { raw[0], raw[1], raw[2],
+                             raw[4], raw[5], raw[6],
+                             raw[8], raw[9], raw[10] };
+        float qBpInv[4];
+        mat3_to_quat(m, qBpInv);
+        qmul(qR, qBpInv, g_gameBindRot[i]);
+        quat_norm(g_gameBindRot[i]);
+    }
+    g_gameBindRotN = boneCount;
+    L("[RT] bind poses 读完 %d 根（rendererRot=(%.3f,%.3f,%.3f,%.3f)）",
+      boneCount, qR[0], qR[1], qR[2], qR[3]);
+    return true;
+}
+
+struct RetargetPair {
+    int game;
+    int mmd;
+    const char* g;
+    const char* m;
+    // offset = qinv(gameBindWorldRot) * mmdBindWorldRot
+    // 运行时：mmdWorldRot = gameWorldRot * offset
+    // 这样 game 回到 bind 时，mmd 正好回到 MMD 自己的 bind。
+    float off[4] = {0, 0, 0, 1};
+    bool  offValid = false;
+};
 static std::vector<RetargetPair> g_pairs;
 
 // g_model / g_load are defined further down; access through forward-declared getters.
@@ -881,6 +1082,82 @@ static void build_retarget() {
     g_rtCenterMmd  = find_mmd_bone_by_name("\xE3\x82\xBB\xE3\x83\xB3\xE3\x82\xBF\xE3\x83\xBC"); // center
     L("[RT] map built: %d pairs (game missing %d, mmd missing %d) centerG=%d centerM=%d",
       ok, missG, missM, g_rtCenterGame, g_rtCenterMmd);
+
+    // =================================================================
+    // bind pose 补偿
+    //
+    // 两套骨架的骨骼初始朝向完全不一样（Bip001 每根都有自己的轴，
+    // MMD 的骨骼默认都是 identity 局部旋转）。直接抄世界旋转，
+    // 等于给每根骨骼多转了它的 bind 朝向那么多 —— 模型就是拧着的。
+    //
+    // offset[i] = qinv(gameBindRot[i]) * mmdBindRot[i]
+    // runtime   : mmdWorldRot = gameWorldRot * offset[i]
+    //
+    // 验证：game 回到 bind → mmd = gameBind * qinv(gameBind) * mmdBind = mmdBind ✓
+    // 这就是 Unity.Animation.RigRemap / reze-rig / mmd-bone-tools 都在用的做法。
+    // =================================================================
+    {
+        bool offOk = false;
+        if (g_anchorIdx >= 0 && g_anchorIdx < (int)g_smrs.size()) {
+            offOk = read_bind_rotations(g_smrs[(size_t)g_anchorIdx],
+                                        (int)g_anchorBones.size());
+        }
+        if (!offOk) {
+            // 降级：拿不到 bindposes 就把当前姿势当 bind（角色通常在站桩，误差可以接受）
+            L("[RT] 降级：拿不到 bindposes，用当前姿势当参考");
+            Il2CppClass* trCls = find_class_any("UnityEngine", "Transform");
+            const MethodInfo* mGetRot = trCls ? find_method_any(trCls, "get_rotation") : nullptr;
+            if (mGetRot) {
+                for (size_t i = 0; i < g_anchorBones.size() && i < 512; i++) {
+                    void* gt = g_anchorBones[i].tr;
+                    void* r = gt ? invoke(mGetRot, gt, nullptr) : nullptr;
+                    if (r) memcpy(g_gameBindRot[i], (char*)r + 16, 16);
+                    else { g_gameBindRot[i][0] = g_gameBindRot[i][1] = g_gameBindRot[i][2] = 0.0f;
+                           g_gameBindRot[i][3] = 1.0f; }
+                    quat_norm(g_gameBindRot[i]);
+                }
+                g_gameBindRotN = (int)g_anchorBones.size();
+                offOk = true;
+            }
+        }
+
+        if (offOk) {
+            Il2CppClass* trCls = find_class_any("UnityEngine", "Transform");
+            const MethodInfo* mGetRot = trCls ? find_method_any(trCls, "get_rotation") : nullptr;
+            // 样本：确认 MMD 骨骼起始确实是世界轴对齐（PMX 骨骼没有旋转字段，
+            // 自建 skeleton 局部旋转全是 identity，所以我们显式 set_rotation 的时候
+            // “bind” 就是 identity）
+            if (!g_pairs.empty()) {
+                void* mt0 = load_ref().skeleton.transform_at(g_pairs[0].mmd);
+                float mb[4] = {0, 0, 0, 1};
+                void* r = (mt0 && mGetRot) ? invoke(mGetRot, mt0, nullptr) : nullptr;
+                if (r) memcpy(mb, (char*)r + 16, 16);
+                L("[RT] MMD bind 样本 '%s' = (%.3f,%.3f,%.3f,%.3f)（期望近似 identity）",
+                  g_pairs[0].m, mb[0], mb[1], mb[2], mb[3]);
+            }
+
+            int withOff = 0;
+            for (auto& p : g_pairs) {
+                if (p.game < 0 || p.game >= g_gameBindRotN) continue;
+                // MMD 侧 bind = identity
+                // → offset = qinv(gameBind) * identity = qinv(gameBind)
+                qinv(g_gameBindRot[p.game], p.off);
+                quat_norm(p.off);
+                p.offValid = true;
+                withOff++;
+            }
+            L("[RT] bind-offset 算好 %d/%zu 对", withOff, g_pairs.size());
+            for (size_t i = 0; i < g_pairs.size() && i < 2; i++) {
+                if (!g_pairs[i].offValid) continue;
+                const float* gb = g_gameBindRot[g_pairs[i].game];
+                L("[RT]   '%s' gbind=(%.2f,%.2f,%.2f,%.2f) off=(%.2f,%.2f,%.2f,%.2f)",
+                  g_pairs[i].g, gb[0], gb[1], gb[2], gb[3],
+                  g_pairs[i].off[0], g_pairs[i].off[1], g_pairs[i].off[2], g_pairs[i].off[3]);
+            }
+        } else {
+            L("[RT] bind-offset 完全拿不到，退回直抄（模型会拧）");
+        }
+    }
 }
 
 static void retarget_update() {
@@ -904,16 +1181,27 @@ static void retarget_update() {
     if (!sGetRot || !sSetRot) return;
 
     for (size_t i = 0; i < g_pairs.size(); i++) {
-        void* gt = g_anchorBones[(size_t)g_pairs[i].game].tr;
-        void* mt = load_ref().skeleton.transform_at(g_pairs[i].mmd);
+        RetargetPair& p = g_pairs[i];
+        if (p.game < 0 || p.game >= (int)g_anchorBones.size()) continue;
+        void* gt = g_anchorBones[(size_t)p.game].tr;
+        void* mt = load_ref().skeleton.transform_at(p.mmd);
         if (!gt || !mt) continue;
         void* q = invoke(sGetRot, gt, nullptr);
         if (!q) continue;
         float quat[4];
         memcpy(quat, (char*)q + 16, sizeof(quat));
+
+        // bind pose 补偿：mmdWorldRot = gameWorldRot * offset
+        if (p.offValid) {
+            float r[4];
+            qmul(quat, p.off, r);
+            quat_norm(r);
+            memcpy(quat, r, sizeof(quat));
+        }
+
         void* a[1] = { quat };
         invoke(sSetRot, mt, a);
-        game::skin::set_bone_world_rot(g_pairs[i].mmd, quat);   // feed CPU skinning
+        game::skin::set_bone_world_rot(p.mmd, quat);   // feed CPU skinning
     }
 
     // Anchor the whole model at the character's world transform. The model
@@ -942,12 +1230,23 @@ static void retarget_update() {
     {
         static int sDiagN = 0;
         if ((++sDiagN % 120) == 1 && !g_pairs.empty()) {
-            void* gt0 = g_anchorBones[(size_t)g_pairs[0].game].tr;
+            RetargetPair& p0 = g_pairs[0];
+            const bool okIdx = (p0.game >= 0 && p0.game < (int)g_anchorBones.size());
+            void* gt0 = okIdx ? g_anchorBones[(size_t)p0.game].tr : nullptr;
             void* q0 = (gt0 && sGetRot) ? invoke(sGetRot, gt0, nullptr) : nullptr;
             float qq[4] = {0, 0, 0, 0};
             if (q0) memcpy(qq, (char*)q0 + 16, sizeof(qq));
-            L("[RTDIAG] pairs=%zu bone0='%s' q=(%.3f,%.3f,%.3f,%.3f)",
-              g_pairs.size(), g_pairs[0].g, qq[0], qq[1], qq[2], qq[3]);
+
+            // 写进 MMD 骨骼之后读回来，用来判断「补偿到底生没生效」
+            float out[4] = {0, 0, 0, 0};
+            void* mt0 = load_ref().skeleton.transform_at(p0.mmd);
+            void* ro = (mt0 && sGetRot) ? invoke(sGetRot, mt0, nullptr) : nullptr;
+            if (ro) memcpy(out, (char*)ro + 16, sizeof(out));
+
+            L("[RTDIAG] pairs=%zu bone0='%s' g=(%.3f,%.3f,%.3f,%.3f) off=%d(%.2f,%.2f,%.2f,%.2f) mmd=(%.3f,%.3f,%.3f,%.3f)",
+              g_pairs.size(), p0.g, qq[0], qq[1], qq[2], qq[3],
+              (int)p0.offValid, p0.off[0], p0.off[1], p0.off[2], p0.off[3],
+              out[0], out[1], out[2], out[3]);
         }
     }
 
@@ -1839,8 +2138,17 @@ static void tick_body() {
     // anchor at any time (e.g. after entering a battle scene).
     if (access("/data/data/com.hermes.h1game/files/mmd_recensus", F_OK) == 0) {
         unlink("/data/data/com.hermes.h1game/files/mmd_recensus");
-        L("[CENSUS] manual trigger (mmd_recensus found)");
-        census_and_anchor();
+        L("[CENSUS] manual trigger (mmd_recensus found) -- force re-anchor");
+        census_and_anchor(true);   // true = ignore existing anchor
+        build_retarget();
+    }
+
+    // Recompute bind offsets only (keep the anchor). Point here when the
+    // character is standing still, so the pose captured at startup isn't
+    // baked in as "bind" while it was mid-run.
+    if (access("/data/data/com.hermes.h1game/files/mmd_recalib", F_OK) == 0) {
+        unlink("/data/data/com.hermes.h1game/files/mmd_recalib");
+        L("[RT] manual recalib (mmd_recalib found)");
         build_retarget();
     }
 
