@@ -344,43 +344,57 @@ bool load_model_into_smr(const mmd::Model& model, const char* pmxPath,
         out.materials = mats.created;
         LLOG("[LOADER] materials=%d shader='%s'", mats.created, mats.shaderName);
 
-        // 关描边：白辉光就是它。
-        // 原角色材质的 shader 有 _OutlineColor（属性探测打出来的），我们从
-        // 同一个 shader 新建的材质默认值就是白色 → 整个模型被一圈白边包住，
-        // 看上去"发白 + 人发黑"。设成全透明。
+        // 白辉光 = 描边。两板斧：
+        //   1) _OutlineColor 直接抄主色 _Color —— 描边和身体同色就隐形了。
+        //      （先试过设 (0,0,0,0)，日志说 25 个材质都设了，但画面还是白边，
+        //       说明这个 shader 的描边不吃 alpha、只吃 rgb。）
+        //   2) _ShadowColor 压到主色的 0.55 倍 —— 卡通阴影原本可能是亮色，
+        //      会让暗部发白，看起来"人发黑但一圈发光"。
         {
             Il2CppClass* mc = (Il2CppClass*)uo::u_class("UnityEngine", "Material");
-            void* mHas = mc ? uo::u_method_typed(mc, "HasProperty", 1, "String") : nullptr;
+            void* mHas    = mc ? uo::u_method_typed(mc, "HasProperty", 1, "String") : nullptr;
+            void* mGetCol = mc ? uo::u_method_typed(mc, "GetColor", 1, "String") : nullptr;
             void* mSetCol = mc ? uo::u_method_typed(mc, "SetColor", 2, "String") : nullptr;
-            if (mSetCol) {
-                Il2CppString* key = g_api.string_new("_OutlineColor");
-                float zero[4] = {0, 0, 0, 0};
-                int n = 0;
+            if (mSetCol && mGetCol && mHas) {
+                Il2CppString* kOut = g_api.string_new("_OutlineColor");
+                Il2CppString* kCol = g_api.string_new("_Color");
+                Il2CppString* kSh  = g_api.string_new("_ShadowColor");
+                int nOut = 0, nSh = 0;
+                float sample[4] = {0, 0, 0, 0};
                 for (void* mp : mats.items) {
                     if (!mp) continue;
-                    bool has = true;
-                    if (mHas && key) {
-                        void* a[1] = { key };
-                        void* r = uo::u_call(mp, mHas, a);
-                        has = r ? (*(uint8_t*)((char*)r + 16)) != 0 : false;
+
+                    float col[4] = {1, 1, 1, 1};
+                    {
+                        void* a[1] = { kCol };
+                        void* r = uo::u_call(mp, mGetCol, a);
+                        if (r) memcpy(col, (char*)r + 16, sizeof(col));
+                        if (sample[3] == 0.0f) memcpy(sample, col, sizeof(sample));
                     }
-                    if (!has) continue;
-                    void* a2[2] = { key, zero };
-                    if (uo::u_call_void(mp, mSetCol, a2)) n++;
+
+                    if (kOut) {
+                        void* a[1] = { kOut };
+                        void* h = uo::u_call(mp, mHas, a);
+                        if (h && *(uint8_t*)((char*)h + 16)) {
+                            void* a2[2] = { kOut, col };
+                            if (uo::u_call_void(mp, mSetCol, a2)) nOut++;
+                        }
+                    }
+                    if (kSh) {
+                        void* a[1] = { kSh };
+                        void* h = uo::u_call(mp, mHas, a);
+                        if (h && *(uint8_t*)((char*)h + 16)) {
+                            float sh[4] = { col[0] * 0.55f, col[1] * 0.55f, col[2] * 0.55f, col[3] };
+                            void* a2[2] = { kSh, sh };
+                            if (uo::u_call_void(mp, mSetCol, a2)) nSh++;
+                        }
+                    }
                 }
-                LLOG("[MAT] _OutlineColor -> 全透明，%d 个材质", n);
+                LLOG("[MAT] _OutlineColor<-主色 %d 个, _ShadowColor<-0.55*主色 %d 个, 主色样本=(%.2f,%.2f,%.2f,%.2f)",
+                     nOut, nSh, sample[0], sample[1], sample[2], sample[3]);
             }
         }
-        // 材质同样钉住（SMR 的 sharedMaterials 只是 managed 引用，native 侧
-        // 的 m_Materials 是 PPtr，GC 收了就渲染不出）
-        if (g_api.gchandle_new) {
-            for (void* mp : mats.items) {
-                if (!mp) continue;
-                uint32_t h = g_api.gchandle_new((Il2CppObject*)mp, true);
-                if (h) out.pinHandles.push_back(h);
-            }
-            LLOG("[LOADER] materials pinned: %zu handles", out.pinHandles.size());
-        }
+
     } else {
         LLOG("[LOADER] 材质创建失败，模型会是一个默认色块");
     }
