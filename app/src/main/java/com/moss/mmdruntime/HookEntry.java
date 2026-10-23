@@ -47,6 +47,10 @@ public class HookEntry implements IXposedHookLoadPackage {
     static final String GAME_SO = "libmmdruntime.so";
     static final String UI_SO   = "libimgui_overlay.so";
 
+    // dispatchTouchEvent 用：这个手势序列已经被我们接管，后续事件全吞。
+    // 不吞的话游戏会收到「一半的手指」，角色乱走。
+    private static boolean swallowUntilUp = false;
+
     static final String GAME_FILES = "/data/data/com.hermes.h1game/files";
     static final String CUSTOM_SO_DIR = GAME_FILES + "/so";
     static final String[] DIRS = {
@@ -111,8 +115,13 @@ public class HookEntry implements IXposedHookLoadPackage {
             //   1. UI 面板（ImGui，含标题栏拖拽）
             //   2. 自由视角摄像机（左右半屏，开着才接管）
             //   3. 游戏
-            // 多指逐根问，一根被吃就整体吃掉 —— 否则游戏会收到
-            // 「一半的拖动」，人物跟着乱走。
+            //
+            // 多指：每根手指都要问一遍，**不能一根被吃就跳出循环**。
+            // build-160 之前是 break —— 左手摇杆那根把事件吃了，右手转视角
+            // 那根永远收不到 MOVE，双指等于废的。
+            //
+            // 一旦有一根归我们，整个手势序列（DOWN..UP）就全不给游戏：
+            // 游戏只收到「一半的手指」会让角色乱走，不如干脆静默。
             XposedBridge.hookAllMethods(actCls, "dispatchTouchEvent", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
@@ -124,26 +133,45 @@ public class HookEntry implements IXposedHookLoadPackage {
                         int w = decor.getWidth(), h = decor.getHeight();
                         if (w <= 0 || h <= 0) return;
 
+                        final int masked = ev.getActionMasked();
+                        // 新的一轮手势，重新判
+                        if (masked == MotionEvent.ACTION_DOWN) swallowUntilUp = false;
+
                         boolean eaten = false;
                         final int cnt = ev.getPointerCount();
-                        for (int i = 0; i < cnt && !eaten; i++) {
-                            final int action = (cnt > 1)
-                                    ? (ev.getActionMasked() | (i << 8))
-                                    : ev.getActionMasked();
+                        final int actIdx = ev.getActionIndex();
+                        for (int i = 0; i < cnt; i++) {
+                            int action = (cnt > 1)
+                                    ? (masked | (i << 8))
+                                    : masked;
+                            // ACTION_POINTER_DOWN / UP 只对「刚按下/刚抬起的」那根生效。
+                            // 不区分的话：双指时松右手 → 循环给左手也发一遍 UP
+                            // → 摇杆被一起清掉，一松右手左手就飞不动了。
+                            if ((masked == MotionEvent.ACTION_POINTER_DOWN ||
+                                 masked == MotionEvent.ACTION_POINTER_UP) && i != actIdx) {
+                                action = (MotionEvent.ACTION_MOVE | (i << 8));
+                            }
                             final float x = ev.getX(i);
                             final float y = ev.getY(i);
                             final int pid = ev.getPointerId(i);
 
                             if (uiSoReady && nativeUiTouch(action, x, y, (float) w, (float) h)) {
                                 eaten = true;
-                                break;
+                                continue;
                             }
                             if (nativeCameraTouch(action, pid, x, y, (float) w, (float) h)) {
                                 eaten = true;
-                                break;
                             }
                         }
-                        if (eaten) param.setResult(true);
+
+                        if (eaten) swallowUntilUp = true;
+                        if (swallowUntilUp) {
+                            param.setResult(true);
+                            // 注意：ACTION_POINTER_UP 不能重置 —— 还有手指在按
+                            if (masked == MotionEvent.ACTION_UP || masked == MotionEvent.ACTION_CANCEL) {
+                                swallowUntilUp = false;
+                            }
+                        }
                     } catch (Throwable ignored) {
                     }
                 }

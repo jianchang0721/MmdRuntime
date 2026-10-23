@@ -738,19 +738,6 @@ namespace {
 // （build-121 实测 Mesh..ctor 就这样，连 tombstone 都不留）。
 int g_pendingEnable = -1;   // -1 = 没请求，0 = 关，1 = 开
 
-// 自动开启：进游戏就试，不用手点面板。
-// 游戏刚启动时 Camera.main 可能还没建，scan 失败——每 3 秒重试直到成功。
-// 用户手动关过就不再自动开（不然关不掉）。
-bool      g_autoTry      = true;
-bool      g_userDisabled = false;
-long long g_lastAutoMs   = 0;
-
-long long mono_ms() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
-}
-
 void do_enable_internal(bool want) {
 
     if (want) {
@@ -831,21 +818,11 @@ void camera_set_enabled(int on) {
 }
 
 void camera_pump() {
-    if (g_pendingEnable >= 0) {
-        const bool want = (g_pendingEnable != 0);
-        g_pendingEnable = -1;
-        g_userDisabled = !want;
-        do_enable_internal(want);
-        return;
-    }
-
-    // 自动开启（不是所有踩点都适合无提示接管，所以 3 秒才试一次）
-    if (!g_autoTry || g_userDisabled || g_camera.enabled) return;
-    const long long now = mono_ms();
-    if (now - g_lastAutoMs < 3000) return;
-    g_lastAutoMs = now;
-    CLOG("[CAM] auto try enable");
-    do_enable_internal(true);
+    // build-161：自动接管已撤（用户要求不要默认开），只在面板里手动启。
+    if (g_pendingEnable < 0) return;
+    const bool want = (g_pendingEnable != 0);
+    g_pendingEnable = -1;
+    do_enable_internal(want);
 }
 
 int camera_is_enabled() {
