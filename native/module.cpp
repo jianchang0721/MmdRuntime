@@ -1283,17 +1283,16 @@ static void retarget_update() {
         game::skin::set_bone_world_rot(p.mmd, quat);   // feed CPU skinning
     }
 
-    // Anchor the whole model at the character's world transform. The model
-    // root lives at the SCENE root, so it survives the character being
-    // deactivated (pooled) and never vanishes mid-frame.
-    if (g_anchorTr && load_ref().modelRoot && sGetPos && sSetPos && sGetRot && sSetRot) {
-        void* q = invoke(sGetRot, g_anchorTr, nullptr);
-        if (q) {
-            float quat[4];
-            memcpy(quat, (char*)q + 16, sizeof(quat));
-            void* a[1] = { quat };
-            invoke(sSetRot, load_ref().modelRoot, a);
-        }
+    // 模型根只跟**位置**，不跟旋转。
+    //
+    // 为什么：游戏角色是 3ds Max Biped 导进来的，SMR 的 Transform 上带着
+    // -90°（Max 的 Z-up → Unity 的 Y-up）修正。以前把 modelRoot.rotation
+    // 直接设成 g_anchorTr.rotation，等于给 Y-up 的 MMD 模型又转了一次
+    // -90°，模型就躺下了。
+    //
+    // 朝向不用管：每根骨骼的世界旋转本来就从游戏骨骼抄过来，角色转身
+    // 的时候骨骼自己在转，整模型跟着转，不需要根节点再补一次。
+    if (g_anchorTr && load_ref().modelRoot && sGetPos && sSetPos) {
         void* p = invoke(sGetPos, g_anchorTr, nullptr);
         if (p) {
             float v[3];
