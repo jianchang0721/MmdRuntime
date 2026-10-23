@@ -805,8 +805,8 @@ static void census_and_anchor(bool force = false) {
         // Ancestor chain names: the player character usually hangs under a
         // PlayerRoot / Player / Hero node. A "player" hit is worth more than
         // every geometric signal combined.
+        char chain[320];
         {
-            char chain[320];
             int off = 0;
             chain[0] = 0;
             void* t = tr;
@@ -817,7 +817,6 @@ static void census_and_anchor(bool force = false) {
                     off += snprintf(chain + off, sizeof(chain) - off, "/%s", nm);
                 t = mParent ? invoke(mParent, t, nullptr) : nullptr;
             }
-            L("[CENSUS] #%zu chain:%s", i, chain[0] ? chain : "(empty)");
 
             char low[320];
             int ln = 0;
